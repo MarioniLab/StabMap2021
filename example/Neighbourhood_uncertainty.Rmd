@@ -1,0 +1,195 @@
+---
+title: "Neighbourhood uncertainty scores for gene subsets"
+author: "Shila Ghazanfar"
+date: "25/02/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set up
+
+```{r}
+set.seed(2021)
+
+library(MouseGastrulationData)
+library(ggplot2)
+library(reshape)
+library(org.Mm.eg.db)
+```
+
+Load functions
+
+```{r}
+source("../scripts/StabMap_functions.R")
+```
+
+# Load some data using MouseGastrulationData
+
+Sample 29, corresponding to E8.5 timepoint. And cell type colours for plotting.
+
+```{r}
+SCE <- EmbryoAtlasData(samples = 29)
+SCE
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+celltype_colours
+```
+
+# Generate some subsets of genes
+
+```{r}
+random_500 = sample(rownames(SCE), 500)
+random_1000 = sample(rownames(SCE), 1000)
+random_2000 = sample(rownames(SCE), 2000)
+random_5000 = sample(rownames(SCE), 5000)
+```
+
+# Generate similarity for all genes
+
+This will be re-used multiple times. Note this is a dense matrix, 
+as output from igraph::similarity.
+
+```{r}
+full_sim = generateSimilarity(SCE)
+dim(full_sim)
+full_sim[1:5,1:5]
+```
+
+# Calculate uncertainty scores for random subsets of genes
+
+If `plot = TRUE` then a UMAP embedding is generated among the subset features. 
+I can add an additional UMAP scatterplot with more information using the 
+`plotAdditional` argument, here is colouring the cells based on their cell type,
+with additional ggplot style arguments passed in the second object within the 
+list.
+
+```{r}
+plotAdditional = list("celltype", scale_colour_manual(values = celltype_colours))
+scores_500 = getSubsetUncertainty(SCE,
+                                  subsetGenes = random_500,
+                                  full_sim = full_sim,
+                                  plot = TRUE,
+                                  plotAdditional = plotAdditional)
+scores_1000 = getSubsetUncertainty(SCE,
+                                  subsetGenes = random_1000,
+                                  full_sim = full_sim,
+                                  plot = TRUE,
+                                  plotAdditional = plotAdditional)
+scores_2000 = getSubsetUncertainty(SCE,
+                                  subsetGenes = random_2000,
+                                  full_sim = full_sim,
+                                  plot = TRUE,
+                                  plotAdditional = plotAdditional)
+scores_5000 = getSubsetUncertainty(SCE,
+                                  subsetGenes = random_5000,
+                                  full_sim = full_sim,
+                                  plot = TRUE,
+                                  plotAdditional = plotAdditional)
+```
+
+# Some exploration of these scores
+
+```{r}
+scores_df = data.frame(cell = colnames(SCE),
+                       score_500 = scores_500,
+                       score_1000 = scores_1000,
+                       score_2000 = scores_2000,
+                       score_5000 = scores_5000,
+                       celltype = SCE$celltype)
+```
+
+As the number of random genes increases, the uncertainty score tends to
+decrease.
+  
+```{r}
+ggplot(scores_df, aes(x = score_500, y = score_1000)) + 
+  geom_point(aes(colour = celltype)) + 
+  theme_classic() + 
+  geom_abline(slope = 1, intercept = 0) +
+  scale_colour_manual(values = celltype_colours) +
+  NULL
+
+ggplot(scores_df, aes(x = score_1000, y = score_2000)) + 
+  geom_point(aes(colour = celltype)) + 
+  theme_classic() + 
+  geom_abline(slope = 1, intercept = 0) +
+  scale_colour_manual(values = celltype_colours) +
+  NULL
+
+ggplot(scores_df, aes(x = score_2000, y = score_5000)) + 
+  geom_point(aes(colour = celltype)) + 
+  theme_classic() + 
+  geom_abline(slope = 1, intercept = 0) +
+  scale_colour_manual(values = celltype_colours) +
+  NULL
+```
+
+The decrease in uncertainty score is varied between cell types, e.g. for 
+Gut this is quite pronounced, while not so much for the Erythroid types.
+
+```{r}
+scores_df_long = melt(scores_df, id.vars = c("cell", "celltype"))
+ggplot(scores_df_long, aes(x = interaction(variable, celltype), y = value)) + 
+  geom_boxplot(aes(fill = celltype)) +
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+```
+
+# Example using a dataset with non-overlapping features
+
+I can also estimate the uncertainty for new data, given the subset. Here, I 
+extract another sample from the MouseGastrulationData package, sample 36, 
+corresponding to again a E8.5 timepoint. For this sample I restrict to genes 
+that are related to cell cycle.
+
+```{r}
+cycle.anno <- select(org.Mm.eg.db, keytype="GOALL", keys="GO:0007049", 
+    columns="ENSEMBL")[,"ENSEMBL"]
+cellCycleGenes = intersect(cycle.anno, rownames(SCE))
+head(cellCycleGenes)
+length(cellCycleGenes)
+```
+
+```{r}
+SCE_query <- EmbryoAtlasData(samples = 36)
+SCE_query
+```
+
+Calculate uncertainty scores for both datasets, using the cell cycle genes.
+This includes a call to `cbind` of the SingleCellExperiment objects,
+which is not trivial and should be used with care.
+
+```{r}
+scores_CC = getSubsetUncertainty(SCE,
+                                 querySCE = SCE_query,
+                                 subsetGenes = cellCycleGenes,
+                                 full_sim = full_sim,
+                                 plot = TRUE,
+                                 plotAdditional = plotAdditional)
+length(scores_CC)
+head(scores_CC)
+
+scores_cc = data.frame(cell = names(scores_CC),
+                       score = scores_CC,
+                       celltype = cbind(SCE, SCE_query)[,names(scores_CC)]$celltype,
+                       sample = cbind(SCE, SCE_query)[,names(scores_CC)]$sample)
+
+ggplot(scores_cc, aes(x = interaction(sample, celltype), y = score)) + 
+  geom_boxplot(aes(fill = celltype)) + 
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+```
+
+```{r}
+sessionInfo()
+```
