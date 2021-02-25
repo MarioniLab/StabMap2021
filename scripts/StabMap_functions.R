@@ -107,8 +107,8 @@ getSubsetUncertainty = function(SCE,
         ref_sim_nn = full_sim[ref_knn_name[i,], ref_knn_name[i,]]
         ref_sim_sub_nn = subset_sim[ref_knn_name[i,], ref_knn_name[i,]]
         
-        stat = ks.test(c(ref_sim_nn[lower.tri(ref_sim_nn)]),
-                       c(ref_sim_sub_nn[lower.tri(ref_sim_sub_nn)]))$stat
+        stat = suppressWarnings({ks.test(c(ref_sim_nn[lower.tri(ref_sim_nn)]),
+                       c(ref_sim_sub_nn[lower.tri(ref_sim_sub_nn)]))$stat})
         names(stat) <- NULL
         return(stat)
     })

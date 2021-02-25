@@ -2,11 +2,20 @@
 title: "Neighbourhood uncertainty scores for gene subsets"
 author: "Shila Ghazanfar"
 date: "25/02/2021"
-output: html_document
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10
+                     fig_height: 8
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      cache = FALSE, cache.lazy = FALSE)
 ```
 
 # Set up
@@ -61,12 +70,15 @@ full_sim[1:5,1:5]
 
 If `plot = TRUE` then a UMAP embedding is generated among the subset features. 
 I can add an additional UMAP scatterplot with more information using the 
-`plotAdditional` argument, here is colouring the cells based on their cell type,
+`plotAdditional` argument, which is itself a list of the proto objects to add, 
+here is colouring the cells based on their cell type,
 with additional ggplot style arguments passed in the second object within the 
 list.
 
 ```{r}
-plotAdditional = list("celltype", scale_colour_manual(values = celltype_colours))
+plotAdditional = list("celltype", 
+                      list(scale_colour_manual(values = celltype_colours),
+                        theme(legend.position = "bottom")))
 scores_500 = getSubsetUncertainty(SCE,
                                   subsetGenes = random_500,
                                   full_sim = full_sim,
