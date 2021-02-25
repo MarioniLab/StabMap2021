@@ -8,8 +8,10 @@ generateSimilarity = function(SCE, k = 50, HVGs = NULL) {
     require(SingleCellExperiment)
     require(bluster)
     require(igraph)
+    require(scater)
     
-    if ("logcounts" %in% names(assays(SCE))) {
+    if (!"logcounts" %in% names(assays(SCE))) {
+        require(scuttle)
         SCE <- logNormCounts(SCE)
     }
     
@@ -56,6 +58,7 @@ getSubsetUncertainty = function(SCE,
     # using generateSimilarity(SCE)
     
     require(igraph)
+    require(BiocNeighbors)
     
     if (is.null(full_sim)) {
         full_sim = generateSimilarity(SCE, ...)
