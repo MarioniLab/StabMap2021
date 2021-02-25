@@ -1,0 +1,180 @@
+generateSimilarity = function(SCE, k = 50, HVGs = NULL) {
+    # SCE is a single cell experiment object containing the gene expression
+    # in "logcounts" slot, otherwise a genes x cells matrix of logcounts
+    # k is the number of nearest neighbours in the estimated KNN network
+    # HVGs is optional set of genes to calculate similarity
+    
+    require(scran)
+    require(SingleCellExperiment)
+    require(bluster)
+    require(igraph)
+    
+    if ("logcounts" %in% names(assays(SCE))) {
+        SCE <- logNormCounts(SCE)
+    }
+    
+    if (is.null(HVGs)) {
+        fit = modelGeneVar(logcounts(SCE))
+        HVGs = getTopHVGs(fit)
+    }
+    
+    SCE <- runPCA(SCE, subset_row = HVGs)
+    
+    graph = makeKNNGraph(reducedDim(SCE, "PCA"), k = k)
+    V(graph)$name <- colnames(SCE)
+    
+    graph_sim = igraph::similarity(graph, method = "jaccard")
+    rownames(graph_sim) <- V(graph)$name
+    colnames(graph_sim) <- V(graph)$name
+    
+    return(graph_sim)
+}
+
+getSubsetUncertainty = function(SCE,
+                                querySCE = NULL,
+                                subsetGenes = NULL,
+                                k = 50, 
+                                full_sim = NULL,
+                                plot = FALSE,
+                                plotAdditional = NULL,
+                                verbose = FALSE,
+                                ...) {
+    
+    # output is a named numeric vector of uncertainty values for each cell
+    # if querySCE is provided, uncertainty values will include these
+    # cells too
+    
+    # SCE is a SingleCellExperiment object of the reference dataset
+    # querySCE is a SingleCellExperiment object of the query dataset,
+    # if subsetGenes is NULL then the rownames of these are given as the 
+    # subset
+    # subsetGenes is a character vector of genes to subset with, this can
+    # be NULL if querySCE is provided
+    # k integer is the number of nearest neighbours
+    # full_sim is a square matrix assumed to be the similarity of the 
+    # reference data given as SCE, which can be generated a priori 
+    # using generateSimilarity(SCE)
+    
+    require(igraph)
+    
+    if (is.null(full_sim)) {
+        full_sim = generateSimilarity(SCE, ...)
+    }
+    
+    # combining SCE objects is nontrivial in general
+    if (is.null(querySCE)) {
+        if (is.null(subsetGenes)) stop("Either querySCE or subsetGenes needs to be provided")
+        jointSCE = SCE[subsetGenes,]
+        batchFactor = rep(c("Reference"), times = c(ncol(SCE)))
+    } else {
+        if (is.null(subsetGenes)) {
+            jointSCE = cbind(SCE, querySCE)[rownames(querySCE),]
+            batchFactor = rep(c("Reference", "Query"), times = c(ncol(SCE), ncol(querySCE)))
+        } else {
+            jointSCE = cbind(SCE, querySCE)[subsetGenes,]
+            batchFactor = rep(c("Reference"), times = c(ncol(SCE)))
+        }
+    }
+    
+    # extract similarity of the subsetted genes
+    subset_sim = generateSimilarity(SCE, HVGs = rownames(jointSCE))
+    
+    # concatenate and batch correct the reference and query datasets (if applicable)
+    jointSCE <- logNormCounts(jointSCE)
+    jointSCE <- runPCA(jointSCE)
+    if (length(unique(batchFactor)) != 1) {
+        jointSCE_corrected <- fastMNN(jointSCE, batch = batchFactor)
+        jointPCs = reducedDim(jointSCE_corrected, "corrected")
+    } else {
+        jointPCs = reducedDim(jointSCE, "PCA")
+    }
+    
+    # identify nearest neighbours
+    tmp_r = jointPCs[colnames(SCE),]
+    
+    ref_knn = queryKNN(tmp_r,
+                       query = jointPCs,
+                       k = k)$index
+    ref_knn_name = apply(ref_knn, 2, function(x) rownames(tmp_r)[x])
+    rownames(ref_knn_name) <- rownames(jointPCs)
+    
+    # extract cell-specific uncertainty score
+    uncertainty_scores = sapply(rownames(ref_knn_name), function(i) {
+        if (verbose) print(i)
+        ref_sim_nn = full_sim[ref_knn_name[i,], ref_knn_name[i,]]
+        ref_sim_sub_nn = subset_sim[ref_knn_name[i,], ref_knn_name[i,]]
+        
+        stat = ks.test(c(ref_sim_nn[lower.tri(ref_sim_nn)]),
+                       c(ref_sim_sub_nn[lower.tri(ref_sim_sub_nn)]))$stat
+        names(stat) <- NULL
+        return(stat)
+    })
+    
+    # generate UMAP for plotting
+    if (plot) {
+        jointSCE$uncertainty = uncertainty_scores
+        reducedDim(jointSCE, "UMAP") <- calculateUMAP(t(jointPCs))
+        g = plotUMAP(jointSCE, colour_by = "uncertainty")
+        if (!is.null(plotAdditional)) {
+            # e.g. plotAdditional = list("celltype", scale_colour_manual(values = celltype_colours))
+            require(patchwork)
+            gAdditional = plotUMAP(jointSCE, colour_by = plotAdditional[[1]])
+            gAll = gAdditional + plotAdditional[[2]] + labs(colour = plotAdditional[[1]]) + g
+            print(gAll)
+        } else {
+            print(g)
+        }
+    }
+    
+    return(uncertainty_scores)
+}
+
+vectorSubset = function(vec, mat){
+    # vec is a named vector
+    # mat is a matrix containing the names or indices for which you want
+    # to get the entries of vec
+    
+    vmat = c(mat)
+    vvec = vec[vmat]
+    
+    vecmat = matrix(vvec, nrow = nrow(mat), ncol = ncol(mat))
+    colnames(vecmat) <- colnames(mat)
+    rownames(vecmat) <- rownames(mat)
+    
+    return(vecmat)
+}
+
+vectorMatch = function(vec, mat, vecnames){
+    # vec is an unnamed vector
+    # vecnames is the names of vec
+    # mat is a matrix containing the names or indices for which you want
+    # to get the entries of vec, matching vecnames
+    
+    vmat = c(mat)
+    
+    vecind = match(vmat,vecnames)
+    
+    vvec = vec[vecind]
+    
+    vecmat = matrix(vvec, nrow = nrow(mat), ncol = ncol(mat))
+    colnames(vecmat) <- colnames(mat)
+    rownames(vecmat) <- rownames(mat)
+    
+    return(vecmat)
+}
+
+# not used currently
+get_umap_graph <- function(umap_output) {
+    require(Matrix)
+    require(igraph)
+    # extracts the graph information and outputs a weighted igraph
+    dists.knn <- umap_output$knn[["distances"]]
+    indx.knn <- umap_output$knn[["indexes"]]
+    m.adj <- Matrix(0, nrow=nrow(indx.knn), ncol=nrow(indx.knn), sparse=TRUE) 
+    rownames(m.adj) <- colnames(m.adj) <- rownames(indx.knn)
+    for (i in seq_len(nrow(m.adj))) {
+    m.adj[i,rownames(indx.knn)[indx.knn[i,]]] <- dists.knn[i,] 
+    }
+    igr <- graph_from_adjacency_matrix(m.adj, weighted=TRUE)
+    return(igr)
+}
