@@ -1,0 +1,281 @@
+---
+title: "Neighbourhood uncertainty scores for seqFISH genes"
+author: "Shila Ghazanfar"
+date: "25/02/2021"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+# Set up
+
+```{r}
+set.seed(2021)
+
+library(MouseGastrulationData)
+library(ggplot2)
+library(reshape)
+library(org.Mm.eg.db)
+library(scater)
+library(patchwork)
+```
+
+Load functions
+
+```{r}
+source("../scripts/StabMap_functions.R")
+```
+
+# Load E6.5, E7.5 and E8.5 data using MouseGastrulationData
+
+```{r}
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt$sample[mt$stage %in% c("E6.5", "E7.5", "E8.5")]
+```
+
+```{r}
+SCE <- EmbryoAtlasData(samples = samples)
+SCE
+SCE <- logNormCounts(SCE)
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+celltype_colours
+```
+
+Randomly subset 5000 cells from this data, for speed reasons
+
+```{r}
+cells_thin = sample(colnames(SCE), 5000)
+SCE_thin = SCE[,cells_thin]
+SCE_thin
+```
+
+# Get gene names for seqFISH data
+
+Account for gene name difference for Cavin3/Prkcdbp. Then convert to the ENSEMBL
+gene IDs.
+
+```{r}
+seqFISH_gene_symbols = c(scan(what = "character", file = "../data/seqFISH_genes.txt"), "Prkcdbp")
+table(seqFISH_gene_symbols %in% rowData(SCE_thin)[,2]) # only one missing, which is accounted for
+seqFISH_genes = rownames(SCE_thin)[rowData(SCE_thin)[,2] %in% seqFISH_gene_symbols]
+length(seqFISH_genes)
+```
+
+# Generate similarity for all genes
+
+This will be re-used multiple times. Note this is a dense matrix, 
+as output from igraph::similarity.
+
+```{r}
+full_sim = generateSimilarity(SCE_thin, batchFactor = SCE_thin$sample)
+dim(full_sim)
+full_sim[1:5,1:5]
+```
+
+# Calculate uncertainty scores for seqFISH genes
+
+```{r}
+plotAdditional = list("celltype", 
+                      list(scale_colour_manual(values = celltype_colours),
+                           theme(legend.position = "bottom")))
+scores_seqFISH = getSubsetUncertainty(SCE_thin,
+                                      subsetGenes = seqFISH_genes,
+                                      full_sim = full_sim,
+                                      plot = TRUE,
+                                      plotAdditional = plotAdditional)
+```
+
+# Some exploration of these scores
+
+```{r}
+scores_df = data.frame(cell = colnames(SCE_thin),
+                       score = scores_seqFISH,
+                       celltype = SCE_thin$celltype)
+```
+
+```{r}
+ggplot(scores_df, aes(x = celltype, y = score)) + 
+  geom_boxplot(aes(fill = celltype)) +
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+```
+
+# Estimate scores for the entire dataset
+
+I can also estimate the uncertainty for the full data, given the subset. This
+means that I can estimate the uncertainty for all cells, but only pull from the
+5000x5000 similarity distribution from the random subset of cells. This is of 
+course an estimate, but it's worthwhile knowing one can circumvent needing to 
+calculate the similarity across all cells.
+
+```{r}
+joint_sample = SCE$sample
+names(joint_sample) <- colnames(SCE)
+scores_all = getSubsetUncertainty(SCE_thin,
+                                  querySCE = SCE[, setdiff(colnames(SCE), colnames(SCE_thin))],
+                                  subsetGenes = seqFISH_genes,
+                                  full_sim = full_sim,
+                                  plot = TRUE,
+                                  plotAdditional = plotAdditional,
+                                  jointBatchFactor = joint_sample)
+length(scores_all)
+head(scores_all)
+
+scores_all_df = data.frame(cell = names(scores_all),
+                       score = scores_all,
+                       celltype = SCE[,names(scores_all)]$celltype,
+                       sample = SCE[,names(scores_all)]$sample,
+                       score_sub = scores_seqFISH[names(scores_all)])
+
+dim(scores_all_df)
+head(scores_all_df)
+
+ggplot(scores_all_df, aes(x = score_sub, y = score)) + 
+  geom_point(aes(colour = celltype)) + 
+  theme_classic() +
+  scale_colour_manual(values = celltype_colours) +
+  geom_abline(slope = 1, intercept = 0) +
+  theme(legend.position = "bottom") +
+  NULL
+
+ggplot(scores_all_df, aes(x = interaction(sample, celltype), y = score)) + 
+  geom_boxplot(aes(fill = celltype)) + 
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+```
+
+Certain cell types do appear to show a higher level of uncertainty, e.g. 
+Allantois and Epiblast.
+
+# Which genes mark differences between cells with high ambiguity?
+
+Here I perform a clustering of the data using the seqFISH genes, extract 
+the clusters with the highest uncertainty values, then re-cluster these cells
+using the entire transcriptome. Presumably, the markers for these re-clusters
+represent the gene expression differences that are as yet unaccounted for
+within the seqFISH gene set.
+
+```{r}
+SCE_sub <- logNormCounts(SCE[seqFISH_genes,])
+fit = modelGeneVar(logcounts(SCE_sub))
+HVGs = getTopHVGs(fit)
+length(HVGs)
+SCE_sub <- runPCA(SCE_sub, subset_row = HVGs)
+SCE_sub_corrected <- fastMNN(SCE_sub, batch = SCE_sub$sample)
+PCs_sub = reducedDim(SCE_sub_corrected, "corrected")
+reducedDim(SCE_sub, "UMAP") <- calculateUMAP(t(PCs_sub))
+
+cl = clusterSNNGraph(SCE_sub_corrected, use.dimred = "corrected")
+table(cl)
+
+SCE_sub$cluster_seqFISH = paste0("seqFISH_cluster_", cl)
+SCE_sub$score = scores_all_df[colnames(SCE_sub), "score"]
+
+plotUMAP(SCE_sub, colour_by = "cluster_seqFISH") + scale_colour_discrete() + ggtitle("Clusters using seqFISH genes")
+plotUMAP(SCE_sub, colour_by = "score")
+plotUMAP(SCE_sub, colour_by = "celltype") + scale_colour_manual(values = celltype_colours)
+
+scores_all_df$cluster_seqFISH = SCE_sub[,names(scores_all)]$cluster_seqFISH
+
+ggplot(scores_all_df, aes(x = cluster_seqFISH, y = score)) + 
+  geom_boxplot(aes(fill = cluster_seqFISH)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  NULL
+```
+
+There are clusters that have a high uncertainty value, while others remain 
+fairly low. This means that for these clusters, there may be additional genes 
+that are needed to better estimate the cell-cell neighbourhoods. 
+
+Re-cluster the cells within these high uncertainty clusters using all genes, 
+and extract their marker genes. Visualise these on the full UMAP and examine
+what genes they are.
+
+```{r}
+clusters_ordered_uncertainty = names(sort(tapply(SCE_sub$score, SCE_sub$cluster_seqFISH, median), decreasing = TRUE))
+clusters_ordered_uncertainty
+
+minFDRs_list = list()
+
+for (i in 1:5) {
+  print(i)
+  
+  SCE_sub$cluster_seqFISH_tmp = SCE_sub$cluster_seqFISH == clusters_ordered_uncertainty[i]
+  g = plotUMAP(SCE_sub, colour_by = "cluster_seqFISH_tmp") +
+    scale_colour_manual(values = c("TRUE" = "red", "FALSE" = "grey"), na.value = "grey") +
+    ggtitle(paste("Clusters using seqFISH genes on seqFISH genes UMAP, ",
+                  clusters_ordered_uncertainty[i]))
+  print(g)
+  
+  g = plotReducedDim(SCE_sub, dimred = "umap", colour_by = "cluster_seqFISH_tmp") +
+    scale_colour_manual(values = c("TRUE" = "red", "FALSE" = "grey"), na.value = "grey") +
+    ggtitle(paste("Clusters using seqFISH genes on full data UMAP, ",
+                  clusters_ordered_uncertainty[i])) +
+    coord_fixed()
+  print(g)
+  
+  table(SCE_sub$celltype, SCE_sub$cluster_seqFISH_tmp)
+  
+  # cluster within these cells
+  SCE_full = SCE[,colnames(SCE_sub)[SCE_sub$cluster_seqFISH_tmp]]
+  SCE_full <- logNormCounts(SCE_full)
+  fit = modelGeneVar(logcounts(SCE_full), block = SCE_full$sample)
+  HVGs = getTopHVGs(fit)
+  length(HVGs)
+  SCE_full <- runPCA(SCE_full, subset_row = HVGs)
+  SCE_full_corrected <- fastMNN(SCE_full, batch = SCE_full$sample)
+  SCE_full_clusters = clusterSNNGraph(SCE_full_corrected, use.dimred = "corrected")
+  table(SCE_full_clusters)
+  SCE_full$full_cluster = SCE_full_clusters
+  
+  full_cluster_markers_array = getMarkerArray(SCE_full, "full_cluster")
+  minFDRs = rowMins(full_cluster_markers_array[,,"FDR"], na.rm = TRUE)
+  names(minFDRs) <- dimnames(full_cluster_markers_array)[[1]]
+  
+  minFDRs_list[[i]] <- minFDRs
+  
+  sort(minFDRs)[1:5]
+  table(minFDRs < 0.01)
+  head(minFDRs[minFDRs < 0.01])
+  rowData(SCE_full)$SYMBOL[order(minFDRs)[1:5]]
+  
+  gList = sapply(rowData(SCE_full)$SYMBOL[order(minFDRs)[1:9]], function(gene) {
+    plotReducedDim(SCE, dimred = "umap", 
+                   # colour_by = rowData(SCE_full)$SYMBOL[order(minFDRs)[1]],
+                   colour_by = gene,
+                   swap_rownames = "SYMBOL",
+                   by_exprs_values = "logcounts") +
+      coord_fixed()
+  }, simplify = FALSE)
+  g = wrap_plots(gList, nrow = 3, ncol = 3)
+  print(g)
+}
+```
+
+Overall it appears that cell cycle genes are lacking, as well as some relevant
+genes for NMPs, e.g. Hes1, Nkx1-2. A decent number of these genes are also in 
+the smFISH set, so it's worth seeing what difference these genes make and to 
+which cells in terms of their neighbourhood similarities.
+
+```{r}
+sessionInfo()
+```
