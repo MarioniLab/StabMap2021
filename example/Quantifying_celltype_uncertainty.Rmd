@@ -1,0 +1,157 @@
+---
+title: "Quantifying cell type label uncertainty and ambiguity"
+author: "Shila Ghazanfar"
+date: "03/03/2021"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+# Set up
+
+```{r}
+set.seed(2021)
+
+library(MouseGastrulationData)
+library(ggplot2)
+library(reshape)
+library(org.Mm.eg.db)
+library(scater)
+library(patchwork)
+```
+
+Load functions
+
+```{r}
+source("../scripts/StabMap_functions.R")
+```
+
+# Load E6.5, E7.5 and E8.5 data using MouseGastrulationData
+
+```{r}
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt$sample[mt$stage %in% c("E6.5", "E7.5", "E8.5")]
+```
+
+```{r}
+SCE <- EmbryoAtlasData(samples = samples)
+SCE
+SCE <- logNormCounts(SCE)
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+celltype_colours
+```
+
+Randomly subset 5000 cells from this data, for speed reasons
+
+```{r}
+cells_thin = sample(colnames(SCE), 5000)
+SCE_thin = SCE[,cells_thin]
+SCE_thin
+```
+
+
+# Randomly select gene sets of different lengths
+
+500, 1000, 2000 and 5000 genes. The idea is that as we increase the
+number of randomly selected genes, then we obtain a more comprehensive
+view of the data.
+
+```{r}
+n_genes = c(500,1000,2000,5000)
+random_genes_list = sapply(n_genes,
+                           function(n) sample(rownames(SCE), n),
+                           simplify = FALSE)
+names(random_genes_list) <- paste0("n_", n_genes)
+random_genes_list[["all"]] <- rownames(SCE)
+lapply(random_genes_list, length)
+```
+
+# Generate similarity for all genes
+
+This will be re-used multiple times. Note this is a dense matrix, 
+as output from igraph::similarity.
+
+```{r}
+full_sim = generateSimilarity(SCE_thin, batchFactor = SCE_thin$sample)
+dim(full_sim)
+full_sim[1:5,1:5]
+```
+
+# Calculate uncertainty scores for each gene set for all cells
+
+Also extract the nearest neighbours graphs to the reference network for each.
+
+```{r}
+joint_sample = SCE$sample
+names(joint_sample) <- colnames(SCE)
+plotAdditional = list("celltype", 
+                      list(scale_colour_manual(values = celltype_colours),
+                           theme(legend.position = "bottom")))
+out_list = lapply(random_genes_list, function(genes) {
+  print(length(genes))
+  getSubsetUncertainty(SCE_thin,
+                       querySCE = SCE[, setdiff(colnames(SCE), colnames(SCE_thin))],
+                       subsetGenes = genes,
+                       full_sim = full_sim,
+                       plot = TRUE,
+                       plotAdditional = plotAdditional,
+                       jointBatchFactor = joint_sample,
+                       returnAdditional = c("ref_knn_name", "jointPCs"))
+}
+)
+```
+
+# Extract cell type and confidence vectors
+
+This is a cells x celltypes matrix with values corresponding to the 
+relative ranked proportion associated with the cell type.
+
+```{r}
+all_celltypes = sort(unique(SCE$celltype))
+ref_knn_name_full = out_list[["all"]][["ref_knn_name"]]
+ref_knn_types_full = vectorMatch(SCE$celltype, ref_knn_name_full, colnames(SCE))
+ref_knn_probs_full = t(apply(ref_knn_types_full, 1, getOrderConfV, truth = all_celltypes))
+
+ref_knn_name_all = out_list[["n_500"]][["ref_knn_name"]]
+ref_knn_types = vectorMatch(SCE$celltype, ref_knn_name_all, colnames(SCE))
+ref_knn_probs = t(apply(ref_knn_types, 1, getOrderConfV, truth = all_celltypes))
+ref_knn_selected = all_celltypes[apply(ref_knn_probs, 1, which.max)]
+ref_knn_conf = apply(ref_knn_probs, 1, max)
+# plot(ref_knn_conf, out_list[["n_500"]][["uncertainty_scores"]], col = paste0("#", as.character(SCE$colour)))
+ggplot(data.frame(conf = ref_knn_conf, unc = out_list[["n_500"]][["uncertainty_scores"]], ct = SCE[,names(ref_knn_conf)]$celltype)) + geom_point(aes(x = conf, y = unc, colour = ct)) + scale_colour_manual(values = celltype_colours)
+
+
+# for each cell extract their nearest neighbours from either the current choice
+# or the full genes network
+i = 1
+X1 = ref_knn_probs[ref_knn_name_all[i,],]
+X2 = ref_knn_probs_full[ref_knn_name_all[i,],]
+# calculate the classification error rate, since we know the labels for these 50
+X1_class = colnames(X1)[apply(X1, 1, which.max)]
+X2_class = colnames(X2)[apply(X2, 1, which.max)]
+mean((SCE[, rownames(X1)]$celltype == X1_class) == (SCE[, rownames(X2)]$celltype == X2_class), na.rm = TRUE)
+
+plot(c(X1), c(X2))
+cor(c(X1), c(X2))
+mean(apply(X1, 1, which.max) == apply(X2, 1, which.max))
+plot(apply(X1, 1, max), apply(X2, 1, max), xlim = c(0,1), ylim = c(0,1)); abline(c(0,1))
+mean(apply(X2, 1, max) - apply(X1, 1, max))
+```
+
+
+
+
+```{r}
+sessionInfo()
+```

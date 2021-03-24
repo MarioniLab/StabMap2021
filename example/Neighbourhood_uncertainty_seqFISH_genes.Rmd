@@ -70,6 +70,11 @@ seqFISH_gene_symbols = c(scan(what = "character", file = "../data/seqFISH_genes.
 table(seqFISH_gene_symbols %in% rowData(SCE_thin)[,2]) # only one missing, which is accounted for
 seqFISH_genes = rownames(SCE_thin)[rowData(SCE_thin)[,2] %in% seqFISH_gene_symbols]
 length(seqFISH_genes)
+
+smFISH_gene_symbols = scan(what = "character", file = "../data/smFISH_genes.txt")
+table(smFISH_gene_symbols %in% rowData(SCE_thin)[,2]) # none missing
+smFISH_genes = rownames(SCE_thin)[rowData(SCE_thin)[,2] %in% smFISH_gene_symbols]
+length(smFISH_genes)
 ```
 
 # Generate similarity for all genes
@@ -102,6 +107,7 @@ scores_seqFISH = getSubsetUncertainty(SCE_thin,
 scores_df = data.frame(cell = colnames(SCE_thin),
                        score = scores_seqFISH,
                        celltype = SCE_thin$celltype)
+dim(scores_df)
 ```
 
 ```{r}
@@ -136,11 +142,23 @@ scores_all = getSubsetUncertainty(SCE_thin,
 length(scores_all)
 head(scores_all)
 
+scores_both = getSubsetUncertainty(SCE_thin,
+                                  querySCE = SCE[, setdiff(colnames(SCE), colnames(SCE_thin))],
+                                  subsetGenes = c(seqFISH_genes, smFISH_genes),
+                                  full_sim = full_sim,
+                                  plot = TRUE,
+                                  plotAdditional = plotAdditional,
+                                  jointBatchFactor = joint_sample)
+length(scores_both)
+head(scores_both)
+
 scores_all_df = data.frame(cell = names(scores_all),
                        score = scores_all,
+                       score_both = scores_both,
                        celltype = SCE[,names(scores_all)]$celltype,
                        sample = SCE[,names(scores_all)]$sample,
-                       score_sub = scores_seqFISH[names(scores_all)])
+                       score_sub = scores_seqFISH[names(scores_all)],
+                       stage = SCE[, names(scores_all)]$stage)
 
 dim(scores_all_df)
 head(scores_all_df)
@@ -153,7 +171,52 @@ ggplot(scores_all_df, aes(x = score_sub, y = score)) +
   theme(legend.position = "bottom") +
   NULL
 
+ggplot(scores_all_df, aes(x = score, y = score_both)) + 
+  geom_point(aes(colour = celltype)) + 
+  theme_classic() +
+  scale_colour_manual(values = celltype_colours) +
+  geom_abline(slope = 1, intercept = 0) +
+  theme(legend.position = "bottom") +
+  NULL
+
 ggplot(scores_all_df, aes(x = interaction(sample, celltype), y = score)) + 
+  geom_boxplot(aes(fill = celltype)) + 
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+
+ggplot(scores_all_df, aes(x = interaction(sample, celltype), y = scores_both)) + 
+  geom_boxplot(aes(fill = celltype)) + 
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+
+ggplot(scores_all_df, aes(x = celltype, y = scores_both)) + 
+  geom_boxplot(aes(fill = celltype)) + 
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+
+ggplot(scores_all_df, aes(x = interaction(stage, celltype), y = scores_both)) + 
+  geom_boxplot(aes(fill = celltype)) + 
+  theme_classic() +
+  scale_fill_manual(values = celltype_colours) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("") +
+  theme(legend.position = "bottom") +
+  NULL
+
+ggplot(scores_all_df, aes(x = celltype, y = scores_both - score)) + 
+  geom_hline(yintercept = 0) +
   geom_boxplot(aes(fill = celltype)) + 
   theme_classic() +
   scale_fill_manual(values = celltype_colours) +

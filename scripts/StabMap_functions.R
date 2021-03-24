@@ -51,6 +51,7 @@ getSubsetUncertainty = function(SCE,
                                 plotAdditional = NULL,
                                 verbose = FALSE,
                                 jointBatchFactor = NULL,
+                                returnAdditional = NULL,
                                 ...) {
     
     # output is a named numeric vector of uncertainty values for each cell
@@ -70,6 +71,9 @@ getSubsetUncertainty = function(SCE,
     # jointBatchFactor is a named factor that should have values for SCE and
     # querySCE if provided, which will be included as a batch via interaction
     # with the Reference and Query batch
+    # returnAdditional is a character vector of any additional objects to be 
+    # returned along with the uncertainty score, e.g. to also extract the 
+    # joint PCs set returnAdditional = "jointPCs", or "g" for the plot
     
     require(igraph)
     require(BiocNeighbors)
@@ -148,7 +152,12 @@ getSubsetUncertainty = function(SCE,
         }
     }
     
-    return(uncertainty_scores)
+    if (!is.null(returnAdditional)) {
+        out = mget(c("uncertainty_scores", intersect(ls(), returnAdditional)))
+        return(out)
+    } else {
+        return(uncertainty_scores)
+    }
 }
 
 vectorSubset = function(vec, mat){
