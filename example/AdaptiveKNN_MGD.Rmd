@@ -1,0 +1,255 @@
+---
+title: "Adaptive KNN classification using Mouse Gastrulation Data"
+author: "Shila Ghazanfar"
+date: "14/04/2021"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+# Set up
+
+```{r}
+set.seed(2021)
+
+library(MouseGastrulationData)
+library(ggplot2)
+library(BiocNeighbors)
+library(patchwork)
+library(reshape)
+
+library(SpatialUtils) # for vectorised subsetting functions
+```
+
+Load functions
+
+```{r}
+source("../scripts/StabMap_functions.R")
+source("../scripts/adaptiveKNN.R")
+```
+
+# Load E6.5, E7.5 and E8.5 data using MouseGastrulationData
+
+```{r}
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt$sample[mt$stage %in% c("E6.5", "E7.5", "E8.5")]
+```
+
+```{r}
+SCE <- EmbryoAtlasData(samples = samples)
+SCE
+
+ind = rowSums(is.na(reducedDim(SCE, "pca.corrected"))) == 0
+PCs = reducedDim(SCE, "pca.corrected")[ind,]
+UMAPs = reducedDim(SCE, "umap")[ind,]
+cData = as.data.frame(colData(SCE))[ind,]
+cData$umap1 <- UMAPs[,1]
+cData$umap2 <- UMAPs[,2]
+
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+celltype_colours
+```
+
+# Estimate optimal local k for classification
+
+Ideally one would re-embed the cells into a new corrected PC space. For now,
+we used the same PC embedding throughout.
+
+```{r}
+k_values = c(5, 10, 20, 50, 100, 250)
+max_k = max(k_values)
+```
+
+```{r}
+samples = unique(cData$sample)
+A_list = sapply(samples, function(sample) {
+  
+  sampleTRUE = cData$sample == sample
+  
+  knn = BiocNeighbors::queryKNN(
+    PCs[!sampleTRUE,],
+    PCs[sampleTRUE,],
+    k = max_k, get.distance = FALSE)$index
+  
+  class_train = cData[!sampleTRUE, "celltype"]
+  
+  class_true = cData[sampleTRUE, "celltype"]
+  names(class_true) <- rownames(cData[sampleTRUE, ])
+  
+  A = getBinaryAccuracy(knn = knn, k_values = k_values,
+                        class_train = class_train, class_true = class_true)
+  
+  return(A)
+}, simplify = FALSE)
+
+A = combineBinaryAccuracies(A_list)
+```
+
+Estimate the best k using cell types and local neighbourhood. If neither
+labels nor neighbourhoods is given, a single optimal k will be extracted.
+One can also extract the optimal k for each individual cell.
+
+```{r}
+labels = cData[rownames(A), "celltype"]
+local = BiocNeighbors::findKNN(PCs[rownames(A),],
+                               get.distance = FALSE,
+                               k = 10)$index
+
+best_k_labels_index = getAdaptiveK(A,
+                             labels = labels,
+                             local = NULL,
+                             outputPerCell = TRUE)
+best_k_labels = k_values[best_k_labels_index]
+names(best_k_labels) <- names(best_k_labels_index)
+table(best_k_labels)
+
+best_k_local_index = getAdaptiveK(A,
+                            local = local,
+                            outputPerCell = TRUE)
+best_k_local = k_values[best_k_local_index]
+names(best_k_local) <- names(best_k_local_index)
+table(best_k_local)
+
+best_k_individual_index = getAdaptiveK(A,
+                                       labels = rownames(A),
+                                       outputPerCell = TRUE)
+best_k_individual = k_values[best_k_individual_index]
+names(best_k_individual) <- names(best_k_individual_index)
+table(best_k_individual)
+
+best_k_overall_index = getAdaptiveK(A,
+                            outputPerCell = TRUE)
+best_k_overall = k_values[best_k_overall_index]
+names(best_k_overall) <- names(best_k_overall_index)
+table(best_k_overall)
+```
+
+```{r}
+table(best_k_local, best_k_labels)
+cData$best_k_local <- best_k_local[rownames(cData)]
+cData$best_k_labels <- best_k_labels[rownames(cData)]
+
+g0 = ggplot(cData, aes(x = umap1, y = umap2, colour = celltype)) + 
+  geom_point(size = 0.5) + 
+  theme_classic() + 
+  scale_colour_manual(values = celltype_colours) +
+  ggtitle("cell types") +
+  theme(legend.position = "right") +
+  coord_fixed() +
+  NULL
+
+g1 = ggplot(cData, aes(x = umap1, y = umap2, colour = best_k_local)) + 
+  geom_point(size = 0.5) + 
+  theme_classic() + 
+  scale_colour_gradient(low = "grey", high = "red") +
+  ggtitle("optimal k from local neighbourhood") +
+  theme(legend.position = "bottom") +
+  coord_fixed() +
+  NULL
+
+g2 = ggplot(cData, aes(x = umap1, y = umap2, colour = best_k_labels)) + 
+  geom_point(size = 0.5) + 
+  theme_classic() + 
+  scale_colour_gradient(low = "grey", high = "red") +
+  ggtitle("optimal k from cell types") +
+  theme(legend.position = "bottom") +
+  coord_fixed() +
+  NULL
+
+g3 = ggplot(cData, aes(x = umap1, y = umap2, colour = best_k_individual)) + 
+  geom_point(size = 0.5) + 
+  theme_classic() + 
+  scale_colour_gradient(low = "grey", high = "red") +
+  ggtitle("optimal k for each cell individually") +
+  theme(legend.position = "bottom") +
+  coord_fixed() +
+  NULL
+
+g0 + g1 + g2 + g3 + plot_layout(nrow = 2)
+```
+
+
+# Compare resubstitution error rates using adaptive k
+
+```{r}
+resubAcc_list = sapply(samples, function(sample) {
+  
+  sampleTRUE = cData$sample == sample
+  
+  knn = BiocNeighbors::queryKNN(
+    PCs[!sampleTRUE,],
+    PCs[sampleTRUE,],
+    k = max_k, get.distance = FALSE)$index
+  
+  class_train = cData[!sampleTRUE, "celltype"]
+  
+  k_local_local = best_k_local[rownames(PCs)][!sampleTRUE]
+  k_local_labels = best_k_labels[rownames(PCs)][!sampleTRUE]
+  
+  class_pred_local = adaptiveKNN(knn,
+                                 class_train,
+                                 k_local = k_local_local)
+  
+  class_pred_labels = adaptiveKNN(knn,
+                                  class_train,
+                                  k_local = k_local_labels)
+  
+  class_pred_fixed = mapply(adaptiveKNN, k_values, MoreArgs = list(class = class_train, knn = knn))
+  colnames(class_pred_fixed) <- paste0("fixed_", k_values)
+  
+  class_pred_all = cbind(local = class_pred_local,
+                         labels = class_pred_labels,
+                         class_pred_fixed)
+  
+  class_true = cData[sampleTRUE, "celltype"]
+  names(class_true) <- rownames(cData[sampleTRUE, ])
+  
+  A = apply(class_pred_all, 2, isEqual, y = class_true)
+  rownames(A) <- rownames(cData)[sampleTRUE]
+  
+  return(list(A = A, pred = class_pred_all))
+}, simplify = FALSE)
+
+resubAcc = do.call(rbind, lapply(resubAcc_list, "[[", "A"))
+resubPred = do.call(rbind, lapply(resubAcc_list, "[[", "pred"))
+```
+
+Compare resubstitution accuracies overall and per cell type
+
+```{r}
+df = data.frame(type = factor(colnames(resubAcc), levels = colnames(resubAcc)),
+                accuracy = colMeans(resubAcc))
+df_ct = melt(apply(resubAcc,2, function(x) tapply(x, cData[rownames(resubAcc), "celltype"], mean)))
+df_ct$X2 <- factor(df_ct$X2, levels = levels(df$type))
+
+g1 = ggplot(df, aes(x = type, y = accuracy)) + 
+  geom_point(size = 3) + 
+  theme_classic() + 
+  NULL
+g1
+
+g2 = ggplot(df_ct, aes(x = X2, y = value)) + 
+  geom_point(size = 1.5, data = df, aes(x = type, y = accuracy), colour = "gray75") +
+  geom_point(size = 3, col = "red") + 
+  theme_classic() + 
+  facet_wrap(~X1, scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  NULL
+g2
+```
+
+
+```{r}
+sessionInfo()
+```
