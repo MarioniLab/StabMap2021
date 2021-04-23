@@ -1,3 +1,20 @@
+vectorSubset = function(vec, mat) {
+  # copied from SpatialUtils to avoid dependency
+  
+  # vec is a named vector
+  # mat is a matrix containing the names or indices for which you want
+  # to get the entries of vec
+  
+  vmat = c(mat)
+  vvec = vec[vmat]
+  
+  vecmat = matrix(vvec, nrow = nrow(mat), ncol = ncol(mat))
+  colnames(vecmat) <- colnames(mat)
+  rownames(vecmat) <- rownames(mat)
+  
+  return(vecmat)
+}
+
 getArgMin = function(M, return_colnames = TRUE, identicalNA = TRUE) {
   # For each row in a matrix calculate the first index
   # which gives the minimum value
@@ -66,8 +83,7 @@ getAdaptiveK = function(E,
   # labels = factor(rep(letters[1:2], each = 10))
   
   require(Matrix)
-  require(SpatialUtils)
-  
+
   if (is.null(labels) & is.null(local)) {
     labels = factor(rep("All", nrow(E)))
   }
@@ -139,8 +155,6 @@ getQueryK = function(knn, k_local) {
 adaptiveKNN = function(knn,
                        class,
                        k_local) {
-  
-  require(SpatialUtils)
   
   # knn is a k-nearest neighbour matrix, giving the 
   # indices of the training set that the query is 
