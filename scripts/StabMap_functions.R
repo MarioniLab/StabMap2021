@@ -1,3 +1,281 @@
+stabMapComparative = function(SCE_X,
+                              SCE_Y,
+                              genes = intersect(rownames(SCE_X), rownames(SCE_Y)),
+                              assayNameX = "logcounts",
+                              assayNameY = "logcounts",
+                              ncomponentsFull = 50,
+                              ncomponentsSubset = 50,
+                              sparse = FALSE) {
+    
+    # TODO: use list or ... to expand to more than just two datasets
+    # TODO: lookup table for features that should be considered joint
+    # between the various data
+    
+    # Given two (or more) datasets without a set reference vs query structure
+    # (i.e. comparative scenario), perform stabMap
+    
+    if (sparse) require(glmnet)
+    
+    # calculate PCs for each dataset
+    PCs_X = calculatePCA(assay(SCE_X, assayNameX), ncomponents = ncomponentsFull)
+    PCs_X_genes = calculatePCA(assay(SCE_X, assayNameX)[genes,],
+                               ncomponents = ncomponentsSubset)
+    
+    PCs_Y = calculatePCA(assay(SCE_Y, assayNameY), ncomponents = ncomponentsFull)
+    PCs_Y_genes = calculatePCA(assay(SCE_Y, assayNameY)[genes,],
+                               ncomponents = ncomponentsSubset)
+    
+    # loadings are saved in the attributes
+    PCs_X_genes_loadings = attr(PCs_X_genes, "rotation")
+    PCs_Y_genes_loadings = attr(PCs_Y_genes, "rotation")
+    
+    if (sparse) {
+        # Fit lasso models with lambda selected with CV to estimate the best 
+        # linear combination of PCs among the subset features
+        coefList_X = list()
+        coefList_Y = list()
+        # i = 1
+        for (i in seq_len(ncol(PCs_X))) {
+            print(i)
+            fit.cv = cv.glmnet(x = PCs_X_genes, y = PCs_X[,i], intercept = FALSE)
+            fit = glmnet(x = PCs_X_genes, y = PCs_X[,i],
+                         lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
+            coefList_X[[i]] <- coef(fit)[-1]
+        }
+        coef_X = do.call(cbind,coefList_X)
+        for (i in seq_len(ncol(PCs_Y))) {
+            print(i)
+            fit.cv = cv.glmnet(x = PCs_Y_genes, y = PCs_Y[,i], intercept = FALSE)
+            fit = glmnet(x = PCs_Y_genes, y = PCs_Y[,i],
+                         lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
+            coefList_Y[[i]] <- coef(fit)[-1]
+        }
+        coef_Y = do.call(cbind,coefList_Y)
+    } else {
+        # fit = lm.fit(x = referencePCs_genes, y = referencePCs[,i])
+        # coefList[[i]] <- fit$coefficients
+        fit = lm.fit(x = PCs_X_genes, y = PCs_X)
+        coef_X = fit$coefficients
+        
+        fit = lm.fit(x = PCs_Y_genes, y = PCs_Y)
+        coef_Y = fit$coefficients
+    }
+    
+    
+    all_assay = cbind(assay(SCE_X, assayNameX)[genes,],
+                      assay(SCE_Y, assayNameY)[genes,])
+    
+    all_assay_sub_X = all_assay[rownames(PCs_X_genes_loadings), ]
+    all_assay_sub_Y = all_assay[rownames(PCs_Y_genes_loadings), ]
+    
+    # d_sub = d[rownames(referencePCs_genes_loadings),]
+    
+    emb_X = t(all_assay_sub_X) %*% PCs_X_genes_loadings %*% coef_X
+    emb_Y = t(all_assay_sub_Y) %*% PCs_Y_genes_loadings %*% coef_Y
+    
+    emb = cbind(emb_X, emb_Y)
+    
+    return(emb)
+    
+}
+
+stabMapContinuous = function(referenceSCE,
+                             querySCE,
+                             genes = intersect(rownames(querySCE), rownames(referenceSCE)),
+                             assayNameReference = "logcounts",
+                             assayNameQuery = "logcounts",
+                             ncomponentsFull = 50,
+                             ncomponentsSubset = 50,
+                             sparse = TRUE) {
+    
+    # stabMap using continuous information between reference and query data
+    
+    if (sparse) require(glmnet)
+    
+    referencePCs = calculatePCA(assay(referenceSCE, assayNameReference), ncomponents = ncomponentsFull)
+    referencePCs_genes = calculatePCA(assay(referenceSCE, assayNameReference)[genes,],
+                                      ncomponents = ncomponentsSubset)
+    
+    # loadings are saved in the attributes
+    referencePCs_genes_loadings = attr(referencePCs_genes, "rotation")
+    
+    if (sparse) {
+        # Fit lasso models with lambda selected with CV to estimate the best 
+        # linear combination of PCs among the subset features
+        coefList = list()
+        # i = 1
+        for (i in seq_len(ncol(referencePCs))) {
+            print(i)
+            fit.cv = cv.glmnet(x = referencePCs_genes, y = referencePCs[,i], intercept = FALSE)
+            fit = glmnet(x = referencePCs_genes, y = referencePCs[,i],
+                         lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
+            coefList[[i]] <- coef(fit)[-1]
+        }
+        coef = do.call(cbind,coefList)
+    } else {
+        # fit = lm.fit(x = referencePCs_genes, y = referencePCs[,i])
+        # coefList[[i]] <- fit$coefficients
+        fit = lm.fit(x = referencePCs_genes, y = referencePCs)
+        coef = fit$coefficients
+    }
+    
+    if (is.null(querySCE)) {
+        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,])
+    } else {
+        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,],
+                          assay(querySCE, assayNameQuery)[genes,])
+    }
+    
+    all_assay_sub = all_assay[rownames(referencePCs_genes_loadings), ]
+    
+    # d_sub = d[rownames(referencePCs_genes_loadings),]
+    
+    emb = t(all_assay_sub) %*% referencePCs_genes_loadings %*% coef
+    
+    return(emb)
+    
+}
+
+
+stabMapLabelled = function(referenceSCE,
+                           querySCE,
+                           genes = intersect(rownames(querySCE), rownames(referenceSCE)),
+                           grouping = "celltype_parsed_sub",
+                           assayNameReference = "logcounts",
+                           assayNameQuery = "logcounts",
+                           prop_explained = 1,
+                           selectionLFC = ifelse(length(genes) >= 1000, 0.1, 0)) {
+    
+    # stabmap using LDA embedding
+    
+    # selectionLFC is a log-fold change to use for selecting features among genes first
+    
+    if (selectionLFC != 0) {
+        
+        print("performing fold-change feature selection")
+        
+        # make assay dense (not ideal)
+        assay(referenceSCE, assayNameReference) <- as.matrix(assay(referenceSCE, assayNameReference))
+        
+        # only compare against groupings that have at least 10 cells
+        sub = names(which(table(colData(referenceSCE)[,grouping]) >= 10))
+        
+        sel = SpatialUtils::getMarkerArray(referenceSCE,
+                                           assayName = assayNameReference,
+                                           group = grouping,
+                                           subset = colData(referenceSCE)[,grouping] %in% sub,
+                                           verbose = FALSE)
+        
+        # only keep genes with at least selectionLFC log fold change
+        topLFC = rowMax(abs(sel[genes,,"LFC"]))
+        
+        genes_sel = genes[topLFC >= selectionLFC]
+        
+        genes <- genes_sel
+        
+        print(length(genes))
+        
+    }
+    
+    require(MASS)
+    
+    # prefilter cells and genes if needed
+    # v = fac2sparse(colData(referenceSCE)[,grouping]) %*% t(assay(referenceSCE, assayNameReference)[genes,])
+    # vars = apply(assay(referenceSCE, assayNameReference)[genes,], 1, function(x)
+    # max(tapply(x, colData(referenceSCE)[,grouping], var), na.rm = TRUE))
+    # genes <- genes[vars > 0]
+    
+    vars = rowMaxs(apply(fac2sparse(colData(referenceSCE)[,grouping]), 1, function(x)
+        rowWeightedVars(assay(referenceSCE, assayNameReference)[genes,],
+                        x)), na.rm = TRUE)
+    if (any(vars == 0)) warning ("removing genes with zero intra-class variance")
+    genes <- genes[vars > 0]
+    
+    # build LDA model for genes
+    fit = lda(t(assay(referenceSCE, assayNameReference)[genes,]),
+              grouping = colData(referenceSCE)[,grouping])
+    
+    # proportion of between group variation explained by the linear
+    # discriminants
+    prop_rel = fit$svd^2/sum(fit$svd^2)
+    n_prop_rel = which(cumsum(prop_rel) >= prop_explained)[1]
+    
+    if (is.null(querySCE)) {
+        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,])
+    } else {
+        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,],
+                          assay(querySCE, assayNameQuery)[genes,])
+    }
+    
+    resub = predict(object = fit, newdata = t(all_assay))
+    
+    if (prop_explained == 1) {
+        resub_out = resub$x
+    } else {
+        resub_out = resub$x[,seq_len(n_prop_rel)]  
+    }
+    return(resub_out)
+}
+
+
+
+mapPCA = function(referenceSCE,
+                  querySCE,
+                  genes = intersect(rownames(querySCE), rownames(referenceSCE)),
+                  assayNameReference = "logcounts",
+                  assayNameQuery = "logcounts",
+                  nPCs = 50,
+                  multiBatchPCA = TRUE) {
+    
+    # get PCA embedding - there is no stability aspect here
+    # and is primarily used for comparison
+    
+    if (is.null(querySCE)) {
+        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,])
+    } else {
+        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,],
+                          assay(querySCE, assayNameQuery)[genes,])
+    }
+    
+    if (multiBatchPCA) {
+        require(batchelor)
+        pca_all <- batchelor::multiBatchPCA(all_assay,
+                                            d = nPCs,
+                                            batch = rep(c("reference","query"),
+                                                        times = c(ncol(referenceSCE), ncol(querySCE))),
+                                            preserve.single = TRUE)[[1]]
+    } else {
+        require(irlba)
+        pca_all <- irlba::prcomp_irlba(t(all_assay), n = nPCs, scale. = TRUE)$x
+        rownames(pca_all) <- colnames(all_assay)
+    }
+    
+    return(pca_all)
+}
+
+reducedMNN_batchFactor = function(LD_embedding,
+                                  batchFactor) {
+    # batch correct within this embedding, wrapper around reducedMNN
+    # batchFactor is a named vector that is matched
+    
+    
+    require(batchelor)
+    
+    batchFactor_used = batchFactor[rownames(LD_embedding)]
+    
+    out = reducedMNN(LD_embedding, batch = batchFactor_used)
+    resub_corrected = out$corrected
+    
+    return(resub_corrected)
+}
+
+
+
+
+
+
+
+
 generateSimilarity = function(SCE, k = 50, batchFactor = NULL, HVGs = NULL) {
     # SCE is a single cell experiment object containing the gene expression
     # in "logcounts" slot, otherwise a genes x cells matrix of logcounts
