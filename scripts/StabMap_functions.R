@@ -193,6 +193,10 @@ stabMapLabelled = function(referenceSCE,
                            prop_explained = 1,
                            selectionLFC = ifelse(length(genes) >= 1000, 0.1, 0)) {
     
+    # to do: allow a list of querySCE objects?
+    
+    require(Matrix)
+    
     # stabmap using LDA embedding
     
     # selectionLFC is a log-fold change to use for selecting features among genes first
@@ -326,7 +330,6 @@ reducedMNN_batchFactor = function(LD_embedding,
 }
 
 UINMF_wrap = function(SCE_list,
-                      ncomponentsFull = 50,
                       ncomponentsSubset = 50) {
     
     # wrapper function to perform the UINMF method,
@@ -334,7 +337,7 @@ UINMF_wrap = function(SCE_list,
     # ensure package version is the one with UINMF
     # following vignette downloaded 29 april 2021
     # http://htmlpreview.github.io/?https://github.com/welch-lab/liger/blob/master/vignettes/UINMF_vignette.html
-    # library(devtools); install_github("welch-lab/liger", ref = "U_algorithm")
+    # library(devtools); install_github("welch-lab/liger", ref = "U_algorithm", force = TRUE)
     require(liger)
     require(SingleCellExperiment)
     
@@ -347,6 +350,10 @@ UINMF_wrap = function(SCE_list,
     # the method takes counts then performs normalisation
     counts_list = lapply(SCE_list, assay, "counts")
     # saveRDS(counts_list, file = "/Users/ghazan01/Dropbox/Backup/StabMap/StabMap2021/data/counts_list.Rds")
+    # saveRDS(counts_list, file = "/Users/ghazan01/Dropbox/Backup/StabMap/StabMap2021/data/counts_list_2.Rds")
+    
+    # reorder counts by number of features
+    counts_list <- counts_list[order(unlist(lapply(counts_list,nrow)))]
     
     # create liger object
     data_liger = createLiger(counts_list)
@@ -354,17 +361,25 @@ UINMF_wrap = function(SCE_list,
     # normalise the data
     data_liger <- liger::normalize(data_liger)
     
-    # select features from the unshared set, from all data modalities
-    # using parameter from vignette
-    data_liger <- selectGenes(data_liger, unshared = TRUE, 
-                              unshared.datasets = as.list(seq_len(length(counts_list))),
-                              unshared.thresh = 0.4)
+    # data_liger <- selectGenes(data_liger, unshared = TRUE,
+    #                           unshared.datasets = as.list(seq_len(length(counts_list))),
+    #                           unshared.thresh = 0.4)
     
+    # select features from the unshared set, from all data modalities
+    # include flag for which modalities actually have unshared features to begin with
+    shared_features = Reduce(intersect, lapply(counts_list, rownames))
+    has_unshared = unlist(lapply(counts_list, function(x) any(!rownames(x) %in% shared_features)))
+    
+    # using parameter from vignette
+    data_liger <- selectGenes(data_liger, unshared = TRUE,
+                              unshared.datasets = list(which(has_unshared)),
+                              unshared.thresh = 0.4)
+
     # rescale the data
     data_liger <- scaleNotCenter(data_liger)
     
     # perform the UINMF, using parameters from vignette
-    data_liger <- optimizeALS(data_liger, k=30, use.unshared = TRUE)
+    data_liger <- optimizeALS(data_liger, k=ncomponentsSubset, use.unshared = TRUE)
     
     # quantile normalise
     # use the default of the larger dataset
