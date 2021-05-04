@@ -1,79 +1,126 @@
-stabMapComparative = function(SCE_X,
-                              SCE_Y,
-                              genes = intersect(rownames(SCE_X), rownames(SCE_Y)),
-                              assayNameX = "logcounts",
-                              assayNameY = "logcounts",
-                              ncomponentsFull = 50,
-                              ncomponentsSubset = 50,
-                              sparse = FALSE) {
+stabMapComparative = function(
+    # SCE_X,
+    # SCE_Y,
+    SCE_list,
+    # genes = intersect(rownames(SCE_X), rownames(SCE_Y)),
+    genes = Reduce(intersect, lapply(SCE_list, rownames)),
+    assayNames = rep("logcounts", length(SCE_list)),
+    stabilise = rep(TRUE, length(SCE_list)),
+    # assayNameX = "logcounts",
+    # assayNameY = "logcounts",
+    ncomponentsFull = 50,
+    ncomponentsSubset = 50,
+    sparse = FALSE) {
     
-    # TODO: use list or ... to expand to more than just two datasets
+    # SCE_list is a list of SingleCellExperiment objects
+    # genes are by default the intersection across all of the SCE_list objects
+    # assayNames are the assayNames to use for each of the SCE_list objects,
+    # default logcounts
+    # stabilise is a logical vector indicating if stabilised components should
+    # be output for each of the SCE_list objects, e.g. if SCE_list corresponds
+    # to a reference and a query i.e. list(referenceSCE, querySCE), then 
+    # stabilise should be c(TRUE, FALSE)
+    
     # TODO: lookup table for features that should be considered joint
     # between the various data
     
     # Given two (or more) datasets without a set reference vs query structure
     # (i.e. comparative scenario), perform stabMap
     
+    require(scater)
     if (sparse) require(glmnet)
     
-    # calculate PCs for each dataset
-    PCs_X = calculatePCA(assay(SCE_X, assayNameX), ncomponents = ncomponentsFull)
-    PCs_X_genes = calculatePCA(assay(SCE_X, assayNameX)[genes,],
-                               ncomponents = ncomponentsSubset)
+    # if some object with a dimension (usually a SingleCellExperiment) is given, 
+    # place it into a list with a single object
+    if (!is.null(dim(SCE_list))) {
+        SCE_list <- list(SCE_list)
+    }
     
-    PCs_Y = calculatePCA(assay(SCE_Y, assayNameY), ncomponents = ncomponentsFull)
-    PCs_Y_genes = calculatePCA(assay(SCE_Y, assayNameY)[genes,],
-                               ncomponents = ncomponentsSubset)
+    PCs = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsFull)
+    PCs_genes = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsFull, subset_row = genes)
+    
+    PCs_genes_loadings = lapply(PCs_genes, attr, "rotation")
+    
+    # # calculate PCs for each dataset
+    # PCs_X = calculatePCA(assay(SCE_X, assayNameX), ncomponents = ncomponentsFull)
+    # PCs_X_genes = calculatePCA(assay(SCE_X, assayNameX)[genes,],
+    #                            ncomponents = ncomponentsSubset)
+    # 
+    # PCs_Y = calculatePCA(assay(SCE_Y, assayNameY), ncomponents = ncomponentsFull)
+    # PCs_Y_genes = calculatePCA(assay(SCE_Y, assayNameY)[genes,],
+    #                            ncomponents = ncomponentsSubset)
     
     # loadings are saved in the attributes
-    PCs_X_genes_loadings = attr(PCs_X_genes, "rotation")
-    PCs_Y_genes_loadings = attr(PCs_Y_genes, "rotation")
+    # PCs_X_genes_loadings = attr(PCs_X_genes, "rotation")
+    # PCs_Y_genes_loadings = attr(PCs_Y_genes, "rotation")
     
     if (sparse) {
         # Fit lasso models with lambda selected with CV to estimate the best 
         # linear combination of PCs among the subset features
-        coefList_X = list()
-        coefList_Y = list()
-        # i = 1
-        for (i in seq_len(ncol(PCs_X))) {
-            print(i)
-            fit.cv = cv.glmnet(x = PCs_X_genes, y = PCs_X[,i], intercept = FALSE)
-            fit = glmnet(x = PCs_X_genes, y = PCs_X[,i],
-                         lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
-            coefList_X[[i]] <- coef(fit)[-1]
+        sparseCoef = function(PCs_X, PCs_X_genes) {
+            coefList_X = list()
+            for (i in seq_len(ncol(PCs_X))) {
+                # print(i)
+                fit.cv = cv.glmnet(x = PCs_X_genes, y = PCs_X[,i], intercept = FALSE)
+                fit = glmnet(x = PCs_X_genes, y = PCs_X[,i],
+                             lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
+                coefList_X[[i]] <- coef(fit)[-1]
+            }
+            coef_X = do.call(cbind,coefList_X)
+            return(coef_X)
         }
-        coef_X = do.call(cbind,coefList_X)
-        for (i in seq_len(ncol(PCs_Y))) {
-            print(i)
-            fit.cv = cv.glmnet(x = PCs_Y_genes, y = PCs_Y[,i], intercept = FALSE)
-            fit = glmnet(x = PCs_Y_genes, y = PCs_Y[,i],
-                         lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
-            coefList_Y[[i]] <- coef(fit)[-1]
-        }
-        coef_Y = do.call(cbind,coefList_Y)
-    } else {
-        # fit = lm.fit(x = referencePCs_genes, y = referencePCs[,i])
-        # coefList[[i]] <- fit$coefficients
-        fit = lm.fit(x = PCs_X_genes, y = PCs_X)
-        coef_X = fit$coefficients
         
-        fit = lm.fit(x = PCs_Y_genes, y = PCs_Y)
-        coef_Y = fit$coefficients
+        coefs = mapply(sparseCoef, PCs, PCs_genes, SIMPLIFY = FALSE)
+        
+        # coefList_Y = list()
+        # for (i in seq_len(ncol(PCs_Y))) {
+        #     print(i)
+        #     fit.cv = cv.glmnet(x = PCs_Y_genes, y = PCs_Y[,i], intercept = FALSE)
+        #     fit = glmnet(x = PCs_Y_genes, y = PCs_Y[,i],
+        #                  lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
+        #     coefList_Y[[i]] <- coef(fit)[-1]
+        # }
+        # coef_Y = do.call(cbind,coefList_Y)
+    } else {
+       
+        coefs = lapply(mapply(lm.fit, PCs_genes, PCs, SIMPLIFY = FALSE), "[[", "coefficients")
+        
+        # fit = lm.fit(x = PCs_X_genes, y = PCs_X)
+        # coef_X = fit$coefficients
+        # 
+        # fit = lm.fit(x = PCs_Y_genes, y = PCs_Y)
+        # coef_Y = fit$coefficients
     }
     
+    all_assay = do.call(cbind, lapply(mapply(assay, SCE_list, assayNames), "[", genes, ))
     
-    all_assay = cbind(assay(SCE_X, assayNameX)[genes,],
-                      assay(SCE_Y, assayNameY)[genes,])
+    # all_assay = cbind(assay(SCE_X, assayNameX)[genes,],
+    #                   assay(SCE_Y, assayNameY)[genes,])
     
-    all_assay_sub_X = all_assay[rownames(PCs_X_genes_loadings), ]
-    all_assay_sub_Y = all_assay[rownames(PCs_Y_genes_loadings), ]
+    # all_assay_sub = lapply(lapply(PCs_genes_loadings, rownames))
+    # all_assay_sub = mapply("[", all_assay, lapply(PCs_genes_loadings, rownames), MoreArgs = list())
+    
+    # all_assay_sub_X = all_assay[rownames(PCs_X_genes_loadings), ]
+    # all_assay_sub_Y = all_assay[rownames(PCs_Y_genes_loadings), ]
     
     # d_sub = d[rownames(referencePCs_genes_loadings),]
     
-    emb_X = t(all_assay_sub_X) %*% PCs_X_genes_loadings %*% coef_X
-    emb_Y = t(all_assay_sub_Y) %*% PCs_Y_genes_loadings %*% coef_Y
+    matMult = function(m1_rnames, m2, m3, m1) {
+        t(m1[m1_rnames,]) %*% m2 %*% m3 
+    }
     
-    emb = cbind(emb_X, emb_Y)
+    emb_list = mapply(matMult,
+                      m1_rnames = lapply(PCs_genes_loadings, rownames),
+                      m2 = PCs_genes_loadings,
+                      m3 = coefs,
+                      MoreArgs = list(m1 = all_assay))
+    
+    # emb_X = t(all_assay_sub_X) %*% PCs_X_genes_loadings %*% coef_X
+    # emb_Y = t(all_assay_sub_Y) %*% PCs_Y_genes_loadings %*% coef_Y
+    
+    # emb = cbind(emb_X, emb_Y)
+    
+    emb = do.call(cbind, emb_list[stabilise])
     
     return(emb)
     
@@ -219,30 +266,39 @@ stabMapLabelled = function(referenceSCE,
 
 
 
-mapPCA = function(referenceSCE,
-                  querySCE,
-                  genes = intersect(rownames(querySCE), rownames(referenceSCE)),
-                  assayNameReference = "logcounts",
-                  assayNameQuery = "logcounts",
-                  nPCs = 50,
-                  multiBatchPCA = TRUE) {
+mapPCA = function(
+    SCE_list,
+    # referenceSCE,
+    # querySCE,
+    # genes = intersect(rownames(querySCE), rownames(referenceSCE)),
+    genes = Reduce(intersect, lapply(SCE_list, rownames)),
+    assayNames = rep("logcounts", length(SCE_list)),
     
+    # assayNameReference = "logcounts",
+    # assayNameQuery = "logcounts",
+    nPCs = 50,
+    multiBatchPCA = TRUE) {
+    
+    # also use list for multiple datasets
     # get PCA embedding - there is no stability aspect here
     # and is primarily used for comparison
     
-    if (is.null(querySCE)) {
-        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,])
-    } else {
-        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,],
-                          assay(querySCE, assayNameQuery)[genes,])
-    }
+    # if (is.null(querySCE)) {
+    #     all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,])
+    # } else {
+    #     all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,],
+    #                       assay(querySCE, assayNameQuery)[genes,])
+    # }
+    
+    all_assay = do.call(cbind, lapply(mapply(assay, SCE_list, assayNames), "[", genes, ))
+    
+    batchFac = rep(seq_len(length(SCE_list)), times = unlist(lapply(SCE_list, ncol)))
     
     if (multiBatchPCA) {
         require(batchelor)
         pca_all <- batchelor::multiBatchPCA(all_assay,
                                             d = nPCs,
-                                            batch = rep(c("reference","query"),
-                                                        times = c(ncol(referenceSCE), ncol(querySCE))),
+                                            batch = batchFac,
                                             preserve.single = TRUE)[[1]]
     } else {
         require(irlba)
@@ -268,6 +324,59 @@ reducedMNN_batchFactor = function(LD_embedding,
     
     return(resub_corrected)
 }
+
+UINMF_wrap = function(SCE_list,
+                      ncomponentsFull = 50,
+                      ncomponentsSubset = 50) {
+    
+    # wrapper function to perform the UINMF method,
+    # primarily for comparison
+    # ensure package version is the one with UINMF
+    # following vignette downloaded 29 april 2021
+    # http://htmlpreview.github.io/?https://github.com/welch-lab/liger/blob/master/vignettes/UINMF_vignette.html
+    # library(devtools); install_github("welch-lab/liger", ref = "U_algorithm")
+    require(liger)
+    require(SingleCellExperiment)
+    
+    # SCE_list is a list of single cell experiment objects
+    # that must have a counts assay slot
+    # SCE_list = list(X = SCE_X, Y = SCE_Y)
+    # counts_list = list(X = readRDS("/Users/ghazan01/Downloads/AADik2b2-Qo3os2QSWXdIAbna/OSMFISH.vin.RDS"),
+    #                 Y = readRDS("/Users/ghazan01/Downloads/AADik2b2-Qo3os2QSWXdIAbna/DROPVIZ.vin.RDS"))
+    
+    # the method takes counts then performs normalisation
+    counts_list = lapply(SCE_list, assay, "counts")
+    # saveRDS(counts_list, file = "/Users/ghazan01/Dropbox/Backup/StabMap/StabMap2021/data/counts_list.Rds")
+    
+    # create liger object
+    data_liger = createLiger(counts_list)
+    
+    # normalise the data
+    data_liger <- liger::normalize(data_liger)
+    
+    # select features from the unshared set, from all data modalities
+    # using parameter from vignette
+    data_liger <- selectGenes(data_liger, unshared = TRUE, 
+                              unshared.datasets = as.list(seq_len(length(counts_list))),
+                              unshared.thresh = 0.4)
+    
+    # rescale the data
+    data_liger <- scaleNotCenter(data_liger)
+    
+    # perform the UINMF, using parameters from vignette
+    data_liger <- optimizeALS(data_liger, k=30, use.unshared = TRUE)
+    
+    # quantile normalise
+    # use the default of the larger dataset
+    data_liger <- quantile_norm(data_liger)
+    
+    # extract out the H matrix (cells by k (k = number of reduced dimensions))
+    H = data_liger@H.norm
+    
+    return(H)
+}
+
+
 
 
 
