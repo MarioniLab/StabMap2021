@@ -38,9 +38,9 @@ stabMapNonOverlapping = function(M_R,
     # A = matrix(rnorm(N_a*P), P, N_a)
     # rownames(A) <- rownames(M_A)
     # colnames(A) <- paste0("A_cell_", 1:ncol(A))
-
+    
     M = rbind(M_R, M_A)
-
+    
     # generate three PC loadings from the data
     # PC of the full data
     PC_GP = calculatePCA(M, ncomponents = l_GP)
@@ -76,6 +76,62 @@ stabMapNonOverlapping = function(M_R,
     W = rbind(W_r, W_m, W_a)
     
     return(W)
+}
+
+
+stabMapSubsetResidual = function(
+    SCE,
+    genes,
+    assayName = "logcounts",
+    ncomponentsFull = 50,
+    ncomponentsSubset = 50,
+    sparse = FALSE) {
+    
+    # given a dataset and a subset of genes,
+    # calculate the error matrix of PC values between 
+    # the two sets of features
+    
+    PCs = list(calculatePCA(assay(SCE, assayName), ncomponents = ncomponentsFull))
+    PCs_genes = list(calculatePCA(assay(SCE, assayName), ncomponents = ncomponentsSubset, subset_row = genes))
+    
+    PCs_genes_loadings = attr(PCs_genes[[1]], "rotation")
+    
+    if (sparse) {
+        # Fit lasso models with lambda selected with CV to estimate the best 
+        # linear combination of PCs among the subset features
+        sparseCoef = function(PCs_X, PCs_X_genes) {
+            coefList_X = list()
+            for (i in seq_len(ncol(PCs_X))) {
+                # print(i)
+                fit.cv = cv.glmnet(x = PCs_X_genes, y = PCs_X[,i], intercept = FALSE)
+                fit = glmnet(x = PCs_X_genes, y = PCs_X[,i],
+                             lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
+                coefList_X[[i]] <- coef(fit)[-1]
+            }
+            coef_X = do.call(cbind,coefList_X)
+            return(coef_X)
+        }
+        
+        coefs = mapply(sparseCoef, PCs, PCs_genes, SIMPLIFY = FALSE)
+    } else {
+        coefs = lapply(mapply(lm.fit, PCs_genes, PCs, SIMPLIFY = FALSE), "[[", "coefficients")
+    }
+    
+    all_assay = assay(SCE, assayName)[genes,]
+    
+    matMult = function(m1_rnames, m2, m3, m1) {
+        t(m1[m1_rnames,]) %*% m2 %*% m3 
+    }
+    
+    emb = matMult(m1_rnames = rownames(PCs_genes_loadings),
+                  m2 = PCs_genes_loadings,
+                  m3 = coefs[[1]],
+                  m1 = all_assay)
+    
+    # fitted minus true values
+    res = emb - PCs[[1]]
+    
+    return(res)
 }
 
 
@@ -163,7 +219,7 @@ stabMapComparative = function(
         # }
         # coef_Y = do.call(cbind,coefList_Y)
     } else {
-       
+        
         coefs = lapply(mapply(lm.fit, PCs_genes, PCs, SIMPLIFY = FALSE), "[[", "coefficients")
         
         # fit = lm.fit(x = PCs_X_genes, y = PCs_X)
@@ -292,11 +348,11 @@ stabMapLabelled = function(referenceSCE,
         # only compare against groupings that have at least 10 cells
         sub = names(which(table(colData(referenceSCE)[,grouping]) >= 10))
         
-        sel = SpatialUtils::getMarkerArray(referenceSCE,
-                                           assayName = assayNameReference,
-                                           group = grouping,
-                                           subset = colData(referenceSCE)[,grouping] %in% sub,
-                                           verbose = FALSE)
+        sel = getMarkerArray(referenceSCE,
+                             assayName = assayNameReference,
+                             group = grouping,
+                             subset = colData(referenceSCE)[,grouping] %in% sub,
+                             verbose = FALSE)
         
         # only keep genes with at least selectionLFC log fold change
         topLFC = rowMax(abs(sel[genes,,"LFC"]))
@@ -460,7 +516,7 @@ UINMF_wrap = function(SCE_list,
     data_liger <- selectGenes(data_liger, unshared = TRUE,
                               unshared.datasets = as.list(which(has_unshared)),
                               unshared.thresh = 0.4)
-
+    
     # rescale the data
     data_liger <- scaleNotCenter(data_liger)
     
@@ -489,167 +545,6 @@ UINMF_wrap = function(SCE_list,
 
 
 
-generateSimilarity = function(SCE, k = 50, batchFactor = NULL, HVGs = NULL) {
-    # SCE is a single cell experiment object containing the gene expression
-    # in "logcounts" slot, otherwise a genes x cells matrix of logcounts
-    # k is the number of nearest neighbours in the estimated KNN network
-    # batchFactor is a factor matching columns of SCE specifying batches for MNN correction
-    # after PCA
-    # HVGs is optional set of genes to calculate similarity
-    
-    require(scran)
-    require(SingleCellExperiment)
-    require(bluster)
-    require(igraph)
-    require(scater)
-    require(batchelor)
-    
-    if (!"logcounts" %in% names(assays(SCE))) {
-        require(scuttle)
-        SCE <- logNormCounts(SCE)
-    }
-    
-    if (is.null(HVGs)) {
-        fit = modelGeneVar(logcounts(SCE))
-        HVGs = getTopHVGs(fit)
-    }
-    
-    SCE <- runPCA(SCE, subset_row = HVGs)
-    
-    if (!is.null(batchFactor)) {
-        SCE_corrected <- fastMNN(SCE, batch = batchFactor)
-        PCs = reducedDim(SCE_corrected, "corrected")
-    } else {
-        PCs = reducedDim(SCE, "PCA")
-    }
-    
-    graph = makeKNNGraph(PCs, k = k)
-    V(graph)$name <- colnames(SCE)
-    
-    graph_sim = igraph::similarity(graph, method = "jaccard")
-    rownames(graph_sim) <- V(graph)$name
-    colnames(graph_sim) <- V(graph)$name
-    
-    return(graph_sim)
-}
-
-getSubsetUncertainty = function(SCE,
-                                querySCE = NULL,
-                                subsetGenes = NULL,
-                                k = 50, 
-                                full_sim = NULL,
-                                plot = FALSE,
-                                plotAdditional = NULL,
-                                verbose = FALSE,
-                                jointBatchFactor = NULL,
-                                returnAdditional = NULL,
-                                ...) {
-    
-    # output is a named numeric vector of uncertainty values for each cell
-    # if querySCE is provided, uncertainty values will include these
-    # cells too
-    
-    # SCE is a SingleCellExperiment object of the reference dataset
-    # querySCE is a SingleCellExperiment object of the query dataset,
-    # if subsetGenes is NULL then the rownames of these are given as the 
-    # subset
-    # subsetGenes is a character vector of genes to subset with, this can
-    # be NULL if querySCE is provided
-    # k integer is the number of nearest neighbours
-    # full_sim is a square matrix assumed to be the similarity of the 
-    # reference data given as SCE, which can be generated a priori 
-    # using generateSimilarity(SCE)
-    # jointBatchFactor is a named factor that should have values for SCE and
-    # querySCE if provided, which will be included as a batch via interaction
-    # with the Reference and Query batch
-    # returnAdditional is a character vector of any additional objects to be 
-    # returned along with the uncertainty score, e.g. to also extract the 
-    # joint PCs set returnAdditional = "jointPCs", or "g" for the plot
-    
-    require(igraph)
-    require(BiocNeighbors)
-    
-    if (is.null(full_sim)) {
-        full_sim = generateSimilarity(SCE, ...)
-    }
-    
-    # combining SCE objects is nontrivial in general
-    if (is.null(querySCE)) {
-        if (is.null(subsetGenes)) stop("Either querySCE or subsetGenes needs to be provided")
-        jointSCE = SCE[subsetGenes,]
-        batchFactor = rep(c("Reference"), times = c(ncol(SCE)))
-    } else {
-        if (is.null(subsetGenes)) {
-            jointSCE = cbind(SCE, querySCE)[rownames(querySCE),]
-            batchFactor = rep(c("Reference", "Query"), times = c(ncol(SCE), ncol(querySCE)))
-        } else {
-            jointSCE = cbind(SCE, querySCE)[subsetGenes,]
-            batchFactor = rep(c("Reference"), times = c(ncol(SCE)))
-        }
-    }
-    
-    # add the additional batch factor if given
-    if (!is.null(jointBatchFactor)) {
-        batchFactor <- interaction(batchFactor, jointBatchFactor[colnames(jointSCE)])
-    }
-    
-    # extract similarity of the subsetted genes
-    subset_sim = generateSimilarity(SCE, HVGs = rownames(jointSCE))
-    
-    # concatenate and batch correct the reference and query datasets (if applicable)
-    jointSCE <- logNormCounts(jointSCE)
-    jointSCE <- runPCA(jointSCE)
-    if (length(unique(batchFactor)) != 1) {
-        jointSCE_corrected <- fastMNN(jointSCE, batch = batchFactor)
-        jointPCs = reducedDim(jointSCE_corrected, "corrected")
-    } else {
-        jointPCs = reducedDim(jointSCE, "PCA")
-    }
-    
-    # identify nearest neighbours
-    tmp_r = jointPCs[colnames(SCE),]
-    
-    ref_knn = queryKNN(tmp_r,
-                       query = jointPCs,
-                       k = k)$index
-    ref_knn_name = apply(ref_knn, 2, function(x) rownames(tmp_r)[x])
-    rownames(ref_knn_name) <- rownames(jointPCs)
-    
-    # extract cell-specific uncertainty score
-    uncertainty_scores = sapply(rownames(ref_knn_name), function(i) {
-        if (verbose) print(i)
-        ref_sim_nn = full_sim[ref_knn_name[i,], ref_knn_name[i,]]
-        ref_sim_sub_nn = subset_sim[ref_knn_name[i,], ref_knn_name[i,]]
-        
-        stat = suppressWarnings({ks.test(c(ref_sim_nn[lower.tri(ref_sim_nn)]),
-                                         c(ref_sim_sub_nn[lower.tri(ref_sim_sub_nn)]))$stat})
-        names(stat) <- NULL
-        return(stat)
-    })
-    
-    # generate UMAP for plotting
-    if (plot) {
-        jointSCE$uncertainty = uncertainty_scores
-        reducedDim(jointSCE, "UMAP") <- calculateUMAP(t(jointPCs))
-        g = plotUMAP(jointSCE, colour_by = "uncertainty")
-        if (!is.null(plotAdditional)) {
-            # e.g. plotAdditional = list("celltype", scale_colour_manual(values = celltype_colours))
-            require(patchwork)
-            gAdditional = plotUMAP(jointSCE, colour_by = plotAdditional[[1]])
-            gAll = gAdditional + plotAdditional[[2]] + labs(colour = plotAdditional[[1]]) + g
-            print(gAll)
-        } else {
-            print(g)
-        }
-    }
-    
-    if (!is.null(returnAdditional)) {
-        out = mget(c("uncertainty_scores", intersect(ls(), returnAdditional)))
-        return(out)
-    } else {
-        return(uncertainty_scores)
-    }
-}
 
 vectorSubset = function(vec, mat){
     # vec is a named vector
