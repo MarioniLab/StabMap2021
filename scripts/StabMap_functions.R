@@ -1,3 +1,84 @@
+stabMapNonOverlapping = function(M_R,
+                                 M_A,
+                                 R,
+                                 A,
+                                 l_GP = 50,
+                                 l_G = 50,
+                                 l_P = 50) {
+    
+    # to-do: incorporate labels via LD components
+    # to-do: loosen restriction on dataset sizes
+    # to-do: think about labels on the R or A modalities
+    
+    # perform stabmap when there is some data that is completely non-overlapping (or disjoint)
+    # current set-up, there are three datasets
+    # with the prime example in mind:
+    # M 10X multiome (RNA + ATAC) data with two submatrices M_R and M_A, of size GxN_m and PxN_m respectively
+    # R scRNA-seq data of size GxN_r
+    # A ATAC-seq data of size PxN_a
+    # for now, assume that the dataset sizes are matched between the modalities
+    
+    # generate some example data
+    # G = 500 # number of genes
+    # P = 1000 # number of atac peak
+    # N_m = 500 # number of multimodal cells
+    # N_r = 100 # number of RNA cells
+    # N_a = 200 # number of ATAC cells
+    # 
+    # M_R = matrix(rnorm(N_m*G), G, N_m)
+    # M_A = matrix(rnorm(N_m*P), P, N_m)
+    # colnames(M_R) <- colnames(M_A) <- paste0("M_cell_", 1:ncol(M_R))
+    # rownames(M_R) <- paste0("RNA_", 1:nrow(M_R))
+    # rownames(M_A) <- paste0("ATAC_", 1:nrow(M_A))
+    # 
+    # R = matrix(rnorm(N_r*G), G, N_r)
+    # rownames(R) <- rownames(M_R)
+    # colnames(R) <- paste0("R_cell_", 1:ncol(R))
+    # 
+    # A = matrix(rnorm(N_a*P), P, N_a)
+    # rownames(A) <- rownames(M_A)
+    # colnames(A) <- paste0("A_cell_", 1:ncol(A))
+
+    M = rbind(M_R, M_A)
+
+    # generate three PC loadings from the data
+    # PC of the full data
+    PC_GP = calculatePCA(M, ncomponents = l_GP)
+    L_GP = attr(PC_GP, "rotation")
+    
+    # PC of the RNA
+    PC_G = calculatePCA(M_R, ncomponents = l_G)
+    L_G = attr(PC_G, "rotation")
+    
+    # PC of the ATAC
+    PC_P = calculatePCA(M_A, ncomponents = l_P)
+    L_P = attr(PC_P, "rotation")
+    
+    # generate two sets of regression coefficients
+    # RNA PCs onto the joint PCs
+    B_R = lm.fit(PC_G, PC_GP)[["coefficients"]]
+    
+    # ATAC PCs onto the joint PCs
+    B_A = lm.fit(PC_P, PC_GP)[["coefficients"]]
+    
+    # project the RNA data into the joint space
+    W_r = t(R[rownames(L_G),]) %*% L_G %*% B_R
+    
+    # project the ATAC data into the joint space
+    W_a = t(A[rownames(L_P),]) %*% L_P %*% B_A
+    
+    # project the multimodal data into the joint space
+    # this is just the same as extracting the scores
+    # W_m = t(M[rownames(L_GP),]) %*% L_GP
+    W_m = PC_GP
+    
+    # bind these cells together
+    W = rbind(W_r, W_m, W_a)
+    
+    return(W)
+}
+
+
 stabMapComparative = function(
     # SCE_X,
     # SCE_Y,
@@ -37,7 +118,7 @@ stabMapComparative = function(
     }
     
     PCs = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsFull)
-    PCs_genes = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsFull, subset_row = genes)
+    PCs_genes = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsSubset, subset_row = genes)
     
     PCs_genes_loadings = lapply(PCs_genes, attr, "rotation")
     
@@ -377,6 +458,9 @@ UINMF_wrap = function(SCE_list,
 
     # rescale the data
     data_liger <- scaleNotCenter(data_liger)
+    
+    # set the number of dimensions to be bounded by the number of scaled data
+    ncomponentsSubset <- min(ncomponentsSubset, ncol(data_liger@scale.data[[1]]))
     
     # perform the UINMF, using parameters from vignette
     data_liger <- optimizeALS(data_liger, k=ncomponentsSubset, use.unshared = TRUE)
