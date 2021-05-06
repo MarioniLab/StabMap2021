@@ -436,6 +436,11 @@ UINMF_wrap = function(SCE_list,
     # reorder counts by number of features
     counts_list <- counts_list[order(unlist(lapply(counts_list,nrow)))]
     
+    # if there are no names, give the list some names
+    if (is.null(names(counts_list)[1])) {
+        names(counts_list) <- paste0("data_", seq_len(length(counts_list)))
+    }
+    
     # create liger object
     data_liger = createLiger(counts_list)
     
@@ -453,7 +458,7 @@ UINMF_wrap = function(SCE_list,
     
     # using parameter from vignette
     data_liger <- selectGenes(data_liger, unshared = TRUE,
-                              unshared.datasets = list(which(has_unshared)),
+                              unshared.datasets = as.list(which(has_unshared)),
                               unshared.thresh = 0.4)
 
     # rescale the data
