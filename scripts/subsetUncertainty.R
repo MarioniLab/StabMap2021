@@ -58,6 +58,7 @@ getSubsetUncertainty = function(SCE,
                                 verbose = FALSE,
                                 jointBatchFactor = NULL,
                                 returnAdditional = NULL,
+                                correctSubset = FALSE,
                                 ...) {
   
   # output is a named numeric vector of uncertainty values for each cell
@@ -80,6 +81,10 @@ getSubsetUncertainty = function(SCE,
   # returnAdditional is a character vector of any additional objects to be 
   # returned along with the uncertainty score, e.g. to also extract the 
   # joint PCs set returnAdditional = "jointPCs", or "g" for the plot
+
+  # correctSubset is a logical whether the similarity of the reference
+  # data using the subset of genes should be calculated with batch correction
+  # applied or not. default FALSE
   
   require(igraph)
   require(BiocNeighbors)
@@ -110,7 +115,13 @@ getSubsetUncertainty = function(SCE,
   
   # extract similarity of the subsetted genes, ... will pass the batchFactor defined in the
   # start of the function, despite being redefined above
-  subset_sim = generateSimilarity(SCE, HVGs = rownames(jointSCE), ...)
+  dots <- list(...)
+  dots[["HVGs"]] <- rownames(jointSCE)
+  dots[["SCE"]] <- SCE
+  if (!correctSubset) {
+  dots[["batchFactor"]] <- NULL
+  }
+  subset_sim = do.call(generateSimilarity, dots)
   
   # concatenate and batch correct the reference and query datasets (if applicable)
   jointSCE <- logNormCounts(jointSCE)
