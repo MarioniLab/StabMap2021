@@ -101,18 +101,6 @@ stabMapSubsetResidual = function(
     if (sparse) {
         # Fit lasso models with lambda selected with CV to estimate the best 
         # linear combination of PCs among the subset features
-        sparseCoef = function(PCs_X, PCs_X_genes) {
-            coefList_X = list()
-            for (i in seq_len(ncol(PCs_X))) {
-                # print(i)
-                fit.cv = cv.glmnet(x = PCs_X_genes, y = PCs_X[,i], intercept = FALSE)
-                fit = glmnet(x = PCs_X_genes, y = PCs_X[,i],
-                             lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
-                coefList_X[[i]] <- coef(fit)[-1]
-            }
-            coef_X = do.call(cbind,coefList_X)
-            return(coef_X)
-        }
         
         coefs = mapply(sparseCoef, PCs, PCs_genes, SIMPLIFY = FALSE)
     } else {
@@ -268,7 +256,9 @@ stabMapContinuous = function(referenceSCE,
                              ncomponentsSubset = 50,
                              sparse = TRUE) {
     
+    # superceded by stabMapComparative!
     # stabMap using continuous information between reference and query data
+    
     
     if (sparse) require(glmnet)
     
@@ -627,6 +617,96 @@ UINMF_wrap = function(
     H = data_liger@H.norm
     
     return(H)
+}
+
+make_an = function(assay) {
+    
+    # assay is a matrix-like object with rows being features
+    # and columns being cells
+    
+    require(anndata)
+    require(Matrix) # if assay is sparse this is needed
+    
+    ad <- AnnData(
+        X = t(assay),
+        var = data.frame(group = rep("", nrow(assay)), row.names = rownames(assay)),
+        obs = data.frame(type = rep("", ncol(assay)), row.names = colnames(assay))
+    )
+    
+    return(ad)
+}
+
+MultiMAP_wrap = function(assay_list, verbose = FALSE) {
+    
+    # wrapper function for MultiMAP
+    # assay_list is a list of assays with rows being features and columns cells
+    # currently restricted to first two entries of assay_list
+    # todo - use paste or some other way to allow all list objects to pass through
+    # to MultiMAP
+    
+    # requires Python 3.8 (for a compatible version of numba)
+    require(reticulate)
+    
+    py_run_string("import scanpy as sc")
+    py_run_string("import anndata")
+    py_run_string("import MultiMAP")
+    
+    if (verbose) message("imported python modules")
+    
+    # generate two random names for global assignment
+    if ("ad_1" %in% ls(envir = .GlobalEnv)) {
+        ad_1_name = paste0(c("ad_1_", sample(letters, 20, replace = TRUE)), collapse = "")
+    } else {
+        ad_1_name = "ad_1"
+    }
+    
+    # generate two random names for global assignment
+    if ("ad_2" %in% ls(envir = .GlobalEnv)) {
+        ad_2_name = paste0(c("ad_2_", sample(letters, 20, replace = TRUE)), collapse = "")
+    } else {
+        ad_2_name = "ad_2"
+    }
+    
+    # assign these globally (YUCK)
+    assign(ad_1_name, make_an(assay_list[[1]]), envir = .GlobalEnv)
+    assign(ad_2_name, make_an(assay_list[[2]]), envir = .GlobalEnv)
+    
+    # ad_1 = make_an(assay_list[[1]])
+    # ad_2 = make_an(assay_list[[2]])
+    
+    if (verbose) message("created anndata objects, assigned to R global environment")
+    
+    # add the anndata objects into python
+    py_run_string(paste0("ad_1 = r.", ad_1_name, ".copy()"))
+    py_run_string(paste0("ad_2 = r.", ad_2_name, ".copy()"))
+    
+    # remove those from the global environment
+    rm(list = c(ad_1_name, ad_2_name), envir = .GlobalEnv)
+    if (verbose) message("removed anndata objects from R global environment")
+    
+    # scale and PCA for each object
+    py_run_string("sc.pp.scale(ad_1)")
+    py_run_string("sc.pp.pca(ad_1)")
+    
+    # dim(py_eval("ad_1.obsm['X_pca']"))
+    
+    py_run_string("sc.pp.scale(ad_2)")
+    py_run_string("sc.pp.pca(ad_2)")
+    
+    # dim(py_eval("ad_2.obsm['X_pca']"))
+    
+    if (verbose) message("performed PCA on anndata objects")
+    
+    # Perform the MultiMAP:
+    py_run_string("adata = MultiMAP.MultiMAP_Integration([ad_1, ad_2], ['X_pca', 'X_pca'])")
+    if (verbose) message("successfully performed MultiMAP")
+    
+    out = py_eval("adata.obsm['X_multimap']")
+    obs = py_to_r(py_eval("adata.obs"))
+    
+    rownames(out) <- rownames(obs)
+    
+    return(out)
 }
 
 jaccard = function(x,y) {
