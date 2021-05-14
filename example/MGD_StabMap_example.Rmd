@@ -1,0 +1,314 @@
+---
+title: "StabMap simulation: Mouse Gastrulation Data"
+author: "Shila Ghazanfar"
+date: "14/05/2021"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = TRUE,cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(MouseGastrulationData)
+library(scater)
+library(ggplot2)
+source("../scripts/adaptiveKNN.R")
+source("../scripts/StabMap_functions.R")
+```
+
+Load data via the MouseGastrulationData Bioconductor package
+
+```{r}
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt[mt[, "stage"] == "E8.5", "sample"]
+
+atlas = EmbryoAtlasData(type = "processed", samples = samples)
+atlas <- logNormCounts(atlas)
+
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+
+ct_all = atlas$celltype
+names(ct_all) <- colnames(atlas)
+
+# the sample information is used in the simulation below
+table(atlas$sample)
+```
+
+Build simulation set up. Treat three samples as the reference data, and 
+treat the fourth sample as a query dataset with fewer features - selected
+randomly among the entire set of features. Perform StabMap embedding, both
+ignoring and using cell type labels, and compare against PCA, UINMF, and
+MultiMAP.
+
+Assess performance by predicting cell types of the query dataset, using the 
+reference dataset cells as the training set, and reporting the classification 
+accuracy of the query dataset.
+
+Option to plot the UMAPs for each simulation, currently set to not run.
+
+```{r}
+nGenes_all = rep(rev(c(100, 150, 200, 250, 500, 1000, 2500, 5000, 10000)),
+                 times = 3)
+names(nGenes_all) <- paste0("Sim_", seq_len(length(nGenes_all)))
+
+labels = "celltype"
+assayNameReference = "logcounts"
+assayNameQuery = "logcounts"
+
+res = NULL
+simGenes = list()
+
+for (sim in names(nGenes_all)) {
+  
+  nGenes = nGenes_all[sim]
+  genes = sample(rownames(atlas)[rowVars(assay(atlas, assayNameReference)) > 0])[seq_len(nGenes)]
+  simGenes[[sim]] <- genes
+  
+  for (querySample in samples) {
+    
+    print(nGenes)
+    print(querySample)
+    
+    doUMAP = FALSE
+    
+    # build reference and query data using querySample and genes
+    referenceSCE = atlas[,atlas$sample != querySample]
+    
+    querySCE = atlas[genes, atlas$sample == querySample]
+    
+    # data type factor
+    type = factor(ifelse(c(colnames(referenceSCE), colnames(querySCE)) %in% colnames(referenceSCE),
+                         "reference", "query"))
+    names(type) <- c(colnames(referenceSCE), colnames(querySCE))
+    
+    # input files as lists
+    SCE_list = list(reference = referenceSCE, query = querySCE)
+    assayNames = list(reference = assayNameReference, query = assayNameQuery)
+    assay_list = mapply(assay, SCE_list, assayNames)
+    counts_list = mapply(assay, SCE_list, "counts")
+    
+    # perform PCA
+    PC_embedding = mapPCA(assay_list)
+    dim(PC_embedding)
+    
+    # perform UINMF
+    UINMF_embedding = UINMF_wrap(counts_list = counts_list)
+    dim(UINMF_embedding)
+    
+    # Perform linear discriminant stabMap
+    LD_embedding = stabMapLabelled(referenceSCE = referenceSCE,
+                                   query_assay = assay_list[["query"]],
+                                   labels = labels,
+                                   assayNameReference = assayNameReference,
+                                   prop_explained = 1,
+                                   selectBestLDA = FALSE)
+    dim(LD_embedding)
+    
+    # comparative stabmap
+    SC_embedding = stabMapComparative(assay_list)
+    dim(SC_embedding)
+    
+    # stabMap treating larger data as only reference
+    SC_ref_embedding = stabMapComparative(assay_list,
+                                          stabilise = c(TRUE, FALSE))
+    dim(SC_ref_embedding)
+    
+    # LDA and comparative stabmap together
+    LD_SC_embedding = cbind(LD_embedding, SC_embedding)
+    
+    # placeholder for MultiMAP, make sure it's added to the below
+    # embeddings_names object
+    
+    embeddings_names = c("StabMap" = "SC_embedding",
+                         "StabMap_LD" = "LD_SC_embedding",
+                         "PCA" = "PC_embedding",
+                         "UINMF" = "UINMF_embedding",
+                         "StabMap_ref" = "SC_ref_embedding",
+                         "StabMap_LD_only" = "LD_embedding"
+                         )
+    
+    if (doUMAP) {
+      
+      embeddings_UMAP = sapply(embeddings_names, function(nm){
+        calculateUMAP_rnames(get(nm))
+      }, simplify = FALSE)
+      
+      pl = function(embedding_UMAP, name, coltype = "type") {
+        ind = sample(rownames(embedding_UMAP))
+        df = data.frame(cell = ind,
+                        U1 = embedding_UMAP[ind,1],
+                        U2 = embedding_UMAP[ind,2],
+                        type = factor(type[ind]),
+                        ctype = ct_all[ind])
+        df$col = df[,coltype]
+        p = ggplot(df, aes(x = U1, y = U2, colour = col)) + 
+          geom_point() +
+          theme_classic() + 
+          theme(legend.position = "none") +
+          coord_fixed() +
+          ggtitle(name)
+        
+        if (coltype == "ctype") {
+          p <- p + scale_colour_manual(values = celltype_colours)
+        }
+        
+        return(p)
+      }
+      
+      p_uncorrected = 
+        wrap_plots(
+          c(
+            mapply(pl, embeddings_UMAP, names(embeddings_UMAP), SIMPLIFY = FALSE),
+            mapply(pl, embeddings_UMAP, names(embeddings_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+          )) +
+        plot_layout(nrow = 2, ncol = 6, byrow = TRUE)
+      p_uncorrected
+      
+    }
+    
+    cnames = unlist(lapply(assay_list, colnames))
+    batchFactor_ref <- ifelse(cnames %in% colnames(referenceSCE),"Reference", "Query")
+    batchFactor = as.character(interaction(batchFactor_ref, colData(atlas)[cnames, "sample"]))
+    names(batchFactor) <- cnames
+    
+    sapply(embeddings_names, function(nm) {
+      print(nm)
+      # can include optional flags for certain embeddings to 
+      # not be passed through a batch correction stage
+      # e.g. from MultiMAP
+      assign(paste0(nm, "_corrected"), reducedMNN_batchFactor(get(nm), batchFactor),
+             envir = .GlobalEnv)
+    }, simplify = FALSE)
+   
+    if (doUMAP) {
+    
+      embeddings_corrected_UMAP = sapply(embeddings_names, function(nm){
+        calculateUMAP_rnames(get(paste0(nm, "_corrected")))
+      }, simplify = FALSE)
+      
+      p_corrected = 
+        wrap_plots(
+          c(
+            mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
+            mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+          )) +
+        plot_layout(nrow = 2, ncol = 6, byrow = TRUE)
+      p_corrected
+      
+    }
+    
+    # predict cell type labels using knn with k = 5
+    referenceLabels = colData(referenceSCE)[,labels]
+    names(referenceLabels) = colnames(referenceSCE)
+    
+    queryLabels = colData(querySCE)[,labels]
+    names(queryLabels) = colnames(querySCE)
+    
+    # calculate accuracy of the query cells
+    embeddings_accuracy = sapply(embeddings_names, function(nm) {
+      print(nm)
+      
+      # only use cells with labels
+      data_all = get(paste0(nm, "_corrected"))
+      labels_train = referenceLabels[!is.na(referenceLabels)]
+      
+      knn_out = embeddingKNN(data_all,
+                             labels_train,
+                             type = "uniform_fixed",
+                             k_values = 5)
+      
+      acc = mean(isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels), na.rm = TRUE)
+      
+      return(acc)
+    }, simplify = FALSE)
+    
+    # calculate the resubstitution accuracy
+    embeddings_resub_accuracy = sapply(embeddings_names, function(nm) {
+      print(nm)
+      
+      # only use cells with labels
+      data_all = get(paste0(nm, "_corrected"))
+      labels_train = referenceLabels[!is.na(referenceLabels)]
+      
+      knn_out = embeddingKNN(data_all,
+                             labels_train,
+                             type = "uniform_fixed",
+                             k_values = 5)
+      
+      acc = mean(isEqual(knn_out[names(labels_train),"resubstituted_labels"],
+                         labels_train), na.rm = TRUE)
+      return(acc)
+    }, simplify = FALSE)
+    
+  
+    res = rbind(res,
+                data.frame(
+                  genes = rep(length(genes), length(embeddings_names)),
+                  type = names(embeddings_names),
+                  Accuracy = unlist(embeddings_accuracy),
+                  Accuracy_resub = unlist(embeddings_resub_accuracy),
+                  querySample = rep(querySample, length(embeddings_names)),
+                  Sim = sim
+                ))
+    
+  }
+}
+
+dim(res)
+```
+
+Save the results
+
+```{r}
+saveRDS(res, file = "../../output/MGD_StabMap_example/MGD_StabMap_example_res.Rds")
+saveRDS(simGenes, file = "../../output/MGD_StabMap_example/MGD_StabMap_example_simGenes.Rds")
+```
+
+Examine results
+
+```{r}
+  g = ggplot(res, aes(x = genes, y = Accuracy)) + 
+      theme_classic() +
+      geom_point(aes(colour = type)) + 
+      geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+      NULL
+    print(g)
+    
+    g = ggplot(res, aes(x = genes, y = Accuracy_resub)) + 
+      theme_classic() +
+      geom_point(aes(colour = type)) + 
+      geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+      NULL
+    print(g)
+    
+    g = ggplot(res, aes(x = factor(genes), y = Accuracy)) + 
+      theme_classic() +
+      stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
+      stat_summary(aes(group = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+      xlab("Number of genes") +
+      labs(fill = "") +
+      NULL
+    print(g)
+```
+
+Finish
+
+```{r}
+sessionInfo()
+```
