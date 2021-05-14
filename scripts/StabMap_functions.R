@@ -91,6 +91,8 @@ stabMapSubsetResidual = function(
     # calculate the error matrix of PC values between 
     # the two sets of features
     
+    # TODO: get the residual from LDA grouping (does this make sense?)
+    
     PCs = list(calculatePCA(assay(SCE, assayName), ncomponents = ncomponentsFull))
     PCs_genes = list(calculatePCA(assay(SCE, assayName), ncomponents = ncomponentsSubset, subset_row = genes))
     
@@ -138,28 +140,28 @@ stabMapSubsetResidual = function(
 stabMapComparative = function(
     # SCE_X,
     # SCE_Y,
-    SCE_list,
+    # SCE_list,
+    assay_list,
     # genes = intersect(rownames(SCE_X), rownames(SCE_Y)),
-    genes = Reduce(intersect, lapply(SCE_list, rownames)),
-    assayNames = rep("logcounts", length(SCE_list)),
-    stabilise = rep(TRUE, length(SCE_list)),
+    features = Reduce(intersect, lapply(assay_list, rownames)),
+    # assayNames = rep("logcounts", length(assay_list)),
+    stabilise = rep(TRUE, length(assay_list)),
     # assayNameX = "logcounts",
     # assayNameY = "logcounts",
     ncomponentsFull = 50,
     ncomponentsSubset = 50,
     sparse = FALSE) {
     
-    # SCE_list is a list of SingleCellExperiment objects
-    # genes are by default the intersection across all of the SCE_list objects
-    # assayNames are the assayNames to use for each of the SCE_list objects,
-    # default logcounts
+    # assay_list is a list of assays (rows features columns cells)
+    # features are by default the intersection across all of the assay_list objects
     # stabilise is a logical vector indicating if stabilised components should
-    # be output for each of the SCE_list objects, e.g. if SCE_list corresponds
-    # to a reference and a query i.e. list(referenceSCE, querySCE), then 
+    # be output for each of the assay_list objects, e.g. if assay_list corresponds
+    # to a reference and a query i.e. list(reference_assay, query_assay), then 
     # stabilise should be c(TRUE, FALSE)
     
     # TODO: lookup table for features that should be considered joint
-    # between the various data
+    # between the various data (cross-species context)
+    # TODO: set maximum PCs based on features numbers
     
     # Given two (or more) datasets without a set reference vs query structure
     # (i.e. comparative scenario), perform stabMap
@@ -167,45 +169,24 @@ stabMapComparative = function(
     require(scater)
     if (sparse) require(glmnet)
     
-    # if some object with a dimension (usually a SingleCellExperiment) is given, 
+    # if some object with a dimension (usually a assay) is given, 
     # place it into a list with a single object
-    if (!is.null(dim(SCE_list))) {
-        SCE_list <- list(SCE_list)
+    if (!is.null(dim(assay_list))) {
+        assay_list <- list(assay_list)
     }
     
-    PCs = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsFull)
-    PCs_genes = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsSubset, subset_row = genes)
+    # PCs = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsFull)
+    # PCs_genes = lapply(mapply(assay, SCE_list, assayNames), calculatePCA, ncomponents = ncomponentsSubset, subset_row = genes)
+    
+    # PCs from full feature space per dataset
+    PCs = lapply(assay_list, calculatePCA, ncomponents = ncomponentsFull)
+    PCs_genes = lapply(assay_list, calculatePCA, ncomponents = ncomponentsSubset, subset_row = features)
     
     PCs_genes_loadings = lapply(PCs_genes, attr, "rotation")
-    
-    # # calculate PCs for each dataset
-    # PCs_X = calculatePCA(assay(SCE_X, assayNameX), ncomponents = ncomponentsFull)
-    # PCs_X_genes = calculatePCA(assay(SCE_X, assayNameX)[genes,],
-    #                            ncomponents = ncomponentsSubset)
-    # 
-    # PCs_Y = calculatePCA(assay(SCE_Y, assayNameY), ncomponents = ncomponentsFull)
-    # PCs_Y_genes = calculatePCA(assay(SCE_Y, assayNameY)[genes,],
-    #                            ncomponents = ncomponentsSubset)
-    
-    # loadings are saved in the attributes
-    # PCs_X_genes_loadings = attr(PCs_X_genes, "rotation")
-    # PCs_Y_genes_loadings = attr(PCs_Y_genes, "rotation")
     
     if (sparse) {
         # Fit lasso models with lambda selected with CV to estimate the best 
         # linear combination of PCs among the subset features
-        sparseCoef = function(PCs_X, PCs_X_genes) {
-            coefList_X = list()
-            for (i in seq_len(ncol(PCs_X))) {
-                # print(i)
-                fit.cv = cv.glmnet(x = PCs_X_genes, y = PCs_X[,i], intercept = FALSE)
-                fit = glmnet(x = PCs_X_genes, y = PCs_X[,i],
-                             lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
-                coefList_X[[i]] <- coef(fit)[-1]
-            }
-            coef_X = do.call(cbind,coefList_X)
-            return(coef_X)
-        }
         
         coefs = mapply(sparseCoef, PCs, PCs_genes, SIMPLIFY = FALSE)
         
@@ -229,7 +210,8 @@ stabMapComparative = function(
         # coef_Y = fit$coefficients
     }
     
-    all_assay = do.call(cbind, lapply(mapply(assay, SCE_list, assayNames), "[", genes, ))
+    all_assay = do.call(cbind, lapply(assay_list, "[", features, ))
+    # all_assay = do.call(cbind, lapply(mapply(assay, SCE_list, assayNames), "[", features, ))
     
     # all_assay = cbind(assay(SCE_X, assayNameX)[genes,],
     #                   assay(SCE_Y, assayNameY)[genes,])
@@ -261,6 +243,20 @@ stabMapComparative = function(
     
     return(emb)
     
+}
+
+sparseCoef = function(PCs_X, PCs_X_genes) {
+    require(glmnet)
+    coefList_X = list()
+    for (i in seq_len(ncol(PCs_X))) {
+        # print(i)
+        fit.cv = cv.glmnet(x = PCs_X_genes, y = PCs_X[,i], intercept = FALSE)
+        fit = glmnet(x = PCs_X_genes, y = PCs_X[,i],
+                     lambda = fit.cv["lambda.min"][[1]], intercept = FALSE)
+        coefList_X[[i]] <- coef(fit)[-1]
+    }
+    coef_X = do.call(cbind,coefList_X)
+    return(coef_X)
 }
 
 stabMapContinuous = function(referenceSCE,
@@ -321,20 +317,38 @@ stabMapContinuous = function(referenceSCE,
 }
 
 
-stabMapLabelled = function(referenceSCE,
-                           querySCE,
-                           genes = intersect(rownames(querySCE), rownames(referenceSCE)),
-                           grouping = "celltype_parsed_sub",
-                           assayNameReference = "logcounts",
-                           assayNameQuery = "logcounts",
-                           prop_explained = 1,
-                           selectionLFC = ifelse(length(genes) >= 1000, 0.1, 0)) {
+stabMapLabelled = function(
+    referenceSCE,
+    # querySCE,
+    # reference_assay,
+    query_assay,
+    features = intersect(rownames(referenceSCE), rownames(query_assay)),
+    labels = "celltype",
+    assayNameReference = "logcounts",
+    # assayNameQuery = "logcounts",
+    prop_explained = 1,
+    selectionLFC = ifelse(length(features) >= 1000, 0.1, 0),
+    selectBestLDA = TRUE,
+    ...) {
     
-    # to do: allow a list of querySCE objects?
+    # TODO: allow a list of querySCE objects?
+    # TODO: allow sparse matrix in selectionLFC
+    
+    # referenceSCE is a SingleCellExperiment object containing 
+    # an assay of assayNameReference, and a colData factor of grouping
+    # query_assay is a features x cells query matrix
+    # features are those which should be considered
+    # labels is the labels to identify LDs
+    # assayNameReference is the assay name to extract from referenceSCE
+    # prop_explained is the proportion of explained variation from the LDs
+    # selectionLFC is the minimum absolute LFC to include genes for inclusion
+    # in LDs
+    # selectBestLDA is a logical whether a cross validation step should
+    # be run to avoid overfitting
+    # ... passed to lda_best
     
     require(Matrix)
-    
-    # stabmap using LDA embedding
+    require(MASS)
     
     # selectionLFC is a log-fold change to use for selecting features among genes first
     
@@ -342,30 +356,31 @@ stabMapLabelled = function(referenceSCE,
         
         print("performing fold-change feature selection")
         
-        # make assay dense (not ideal)
-        assay(referenceSCE, assayNameReference) <- as.matrix(assay(referenceSCE, assayNameReference))
+        sce = SingleCellExperiment(assays = list("expr" = assay(referenceSCE, assayNameReference)[features,]))
+        colData(sce) <- colData(referenceSCE)
+        
+        # make assay dense (to fix)
+        assay(sce, "expr") <- as.matrix(assay(sce, "expr"))
         
         # only compare against groupings that have at least 10 cells
-        sub = names(which(table(colData(referenceSCE)[,grouping]) >= 10))
+        sub = names(which(table(colData(sce)[,labels]) >= 10))
         
-        sel = getMarkerArray(referenceSCE,
-                             assayName = assayNameReference,
-                             group = grouping,
-                             subset = colData(referenceSCE)[,grouping] %in% sub,
+        sel = getMarkerArray(sce,
+                             assayName = "expr",
+                             group = labels,
+                             subset = colData(sce)[,labels] %in% sub,
                              verbose = FALSE)
         
         # only keep genes with at least selectionLFC log fold change
-        topLFC = rowMax(abs(sel[genes,,"LFC"]))
+        topLFC = rowMax(abs(sel[,,"LFC"]))
         
-        genes_sel = genes[topLFC >= selectionLFC]
+        features_sel = features[topLFC >= selectionLFC]
         
-        genes <- genes_sel
+        features <- features_sel
         
-        print(length(genes))
+        message(length(features), " features with large enough LFC")
         
     }
-    
-    require(MASS)
     
     # prefilter cells and genes if needed
     # v = fac2sparse(colData(referenceSCE)[,grouping]) %*% t(assay(referenceSCE, assayNameReference)[genes,])
@@ -373,29 +388,38 @@ stabMapLabelled = function(referenceSCE,
     # max(tapply(x, colData(referenceSCE)[,grouping], var), na.rm = TRUE))
     # genes <- genes[vars > 0]
     
-    vars = rowMaxs(apply(fac2sparse(colData(referenceSCE)[,grouping]), 1, function(x)
-        rowWeightedVars(assay(referenceSCE, assayNameReference)[genes,],
+    vars = rowMaxs(apply(fac2sparse(colData(referenceSCE)[,labels]), 1, function(x)
+        rowWeightedVars(assay(referenceSCE, assayNameReference)[features,],
                         x)), na.rm = TRUE)
     if (any(vars == 0)) warning ("removing genes with zero intra-class variance")
-    genes <- genes[vars > 0]
+    features <- features[vars > 0]
     
     # build LDA model for genes
-    fit = lda(t(assay(referenceSCE, assayNameReference)[genes,]),
-              grouping = colData(referenceSCE)[,grouping])
+    data_train = t(assay(referenceSCE, assayNameReference)[features,])
+    labels_train = colData(referenceSCE)[,labels]
+    
+    # remove cells with missing labels
+    if (selectBestLDA) {
+        fit = lda_best(data = data_train[!is.na(labels_train),],
+                       labels = labels_train[!is.na(labels_train)], ...)
+    } else {
+        fit = lda(data_train[!is.na(labels_train),],
+                  grouping = labels_train[!is.na(labels_train)])
+    }
     
     # proportion of between group variation explained by the linear
     # discriminants
     prop_rel = fit$svd^2/sum(fit$svd^2)
     n_prop_rel = which(cumsum(prop_rel) >= prop_explained)[1]
     
-    if (is.null(querySCE)) {
-        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,])
+    if (is.null(query_assay)) {
+        all_assay = assay(referenceSCE, assayNameReference)[features,]
     } else {
-        all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,],
-                          assay(querySCE, assayNameQuery)[genes,])
+        all_assay = cbind(assay(referenceSCE, assayNameReference)[features,],
+                          query_assay[features,])
     }
     
-    resub = predict(object = fit, newdata = t(all_assay))
+    resub = predict(object = fit, newdata = t(all_assay[rownames(fit$scaling),]))
     
     if (prop_explained == 1) {
         resub_out = resub$x
@@ -408,32 +432,30 @@ stabMapLabelled = function(referenceSCE,
 
 
 mapPCA = function(
-    SCE_list,
-    # referenceSCE,
-    # querySCE,
-    # genes = intersect(rownames(querySCE), rownames(referenceSCE)),
-    genes = Reduce(intersect, lapply(SCE_list, rownames)),
-    assayNames = rep("logcounts", length(SCE_list)),
-    
-    # assayNameReference = "logcounts",
-    # assayNameQuery = "logcounts",
+    # SCE_list,
+    # genes = Reduce(intersect, lapply(SCE_list, rownames)),
+    # assayNames = rep("logcounts", length(SCE_list)),
+    assay_list,
+    features = Reduce(intersect, lapply(assay_list, rownames)),
     nPCs = 50,
     multiBatchPCA = TRUE) {
     
-    # also use list for multiple datasets
-    # get PCA embedding - there is no stability aspect here
-    # and is primarily used for comparison
+    # Wrapper function to perform PCA on overlapping features
     
-    # if (is.null(querySCE)) {
-    #     all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,])
-    # } else {
-    #     all_assay = cbind(assay(referenceSCE, assayNameReference)[genes,],
-    #                       assay(querySCE, assayNameQuery)[genes,])
-    # }
+    # assay_list is a list of assay matrices (rows are features columns are features)
+    # features is the features to include for PCA
+    # nPCs is the number of PCs to use
+    # multiBatchPCA is a logical as to whether multiBatchPCA should be run,
+    # otherwise irlba PCA
     
-    all_assay = do.call(cbind, lapply(mapply(assay, SCE_list, assayNames), "[", genes, ))
+    # TODO: add stop when features not appearing in data etc
     
-    batchFac = rep(seq_len(length(SCE_list)), times = unlist(lapply(SCE_list, ncol)))
+    # previous input was a list of SCE objects
+    # all_assay = do.call(cbind, lapply(mapply(assay, SCE_list, assayNames), "[", genes, ))
+    
+    all_assay = do.call(cbind, lapply(assay_list, "[", features, ))
+    
+    batchFac = rep(seq_len(length(assay_list)), times = unlist(lapply(assay_list, ncol)))
     
     if (multiBatchPCA) {
         require(batchelor)
@@ -450,33 +472,94 @@ mapPCA = function(
     return(pca_all)
 }
 
-reducedMNN_batchFactor = function(LD_embedding,
-                                  batchFactor) {
+reducedMNN_batchFactor = function(embedding,
+                                  batchFactor,
+                                  ...) {
     # batch correct within this embedding, wrapper around reducedMNN
     # batchFactor is a named vector that is matched
-    
+    # ... passed to reducedMNN
     
     require(batchelor)
     
-    batchFactor_used = batchFactor[rownames(LD_embedding)]
+    # for some reason reducedMNN only takes dense matrices
+    embedding <- as.matrix(embedding)
     
-    out = reducedMNN(LD_embedding, batch = batchFactor_used)
+    batchFactor_used = batchFactor[rownames(embedding)]
+    
+    out = reducedMNN(embedding, batch = batchFactor_used, ...)
     resub_corrected = out$corrected
     
     return(resub_corrected)
 }
 
-UINMF_wrap = function(SCE_list,
-                      ncomponentsSubset = 50) {
+ComBat_batchFactor = function(embedding,
+                              batchFactor,
+                              ...) {
+    # batch correct within this embedding, wrapper around sva's ComBat
+    # batchFactor is a named vector that is matched
+    # ... passed to reducedMNN
     
-    # wrapper function to perform the UINMF method,
-    # primarily for comparison
-    # ensure package version is the one with UINMF
+    require(sva)
+    
+    batchFactor_used = batchFactor[rownames(embedding)]
+    
+    out = ComBat(t(embedding), batch = batchFactor_used, ...)
+    resub_corrected = t(out)
+    
+    return(resub_corrected)
+}
+
+Harmony_batchFactor = function(embedding,
+                              batchFactor, ...) {
+    # batch correct within this embedding, wrapper around sva's ComBat
+    # batchFactor is a named vector that is matched
+    # ... passed to reducedMNN
+    
+    require(harmony)
+    
+    batchFactor_used = batchFactor[rownames(embedding)]
+    
+    out = HarmonyMatrix(t(embedding), batchFactor_used, do_pca = FALSE, ...)
+    resub_corrected = t(out)
+    
+    return(resub_corrected)
+}
+
+batchCorrect_batchFactor = function(embedding,
+                                    batchFactor,
+                                    PARAM) {
+    # batch correct within this embedding, wrapper around sva's ComBat
+    # batchFactor is a named vector that is matched
+    # PARAM passed to batchCorrect
+    
+    require(batchelor)
+    
+    batchFactor_used = batchFactor[rownames(embedding)]
+    
+    out = batchCorrect(t(embedding), batch = batchFactor_used, PARAM = PARAM)
+    resub_corrected = t(assays(out)[[1]])
+    
+    return(resub_corrected)
+}
+
+UINMF_wrap = function(
+    SCE_list = NULL,
+    counts_list = NULL,
+    ncomponentsSubset = 50) {
+    
+    # wrapper function to perform the UINMF method
+    
+    # SCE_list is a list of SingleCellExperiment objects
+    # counts_list is a list of read counts (not logcounts!)
+    # if SCE_list is given, then counts_list is ignored
+    
+    # ensure package version is the one with UINMF method included
     # following vignette downloaded 29 april 2021
     # http://htmlpreview.github.io/?https://github.com/welch-lab/liger/blob/master/vignettes/UINMF_vignette.html
+    # installed using 
     # library(devtools); install_github("welch-lab/liger", ref = "U_algorithm", force = TRUE)
     require(liger)
-    require(SingleCellExperiment)
+    # require(SingleCellExperiment)
     
     # SCE_list is a list of single cell experiment objects
     # that must have a counts assay slot
@@ -484,8 +567,12 @@ UINMF_wrap = function(SCE_list,
     # counts_list = list(X = readRDS("/Users/ghazan01/Downloads/AADik2b2-Qo3os2QSWXdIAbna/OSMFISH.vin.RDS"),
     #                 Y = readRDS("/Users/ghazan01/Downloads/AADik2b2-Qo3os2QSWXdIAbna/DROPVIZ.vin.RDS"))
     
-    # the method takes counts then performs normalisation
+    # the method takes counts then performs the normalisation
+    
+    if (!is.null(SCE_list)) {
     counts_list = lapply(SCE_list, assay, "counts")
+    }
+    
     # saveRDS(counts_list, file = "/Users/ghazan01/Dropbox/Backup/StabMap/StabMap2021/data/counts_list.Rds")
     # saveRDS(counts_list, file = "/Users/ghazan01/Dropbox/Backup/StabMap/StabMap2021/data/counts_list_2.Rds")
     
@@ -512,8 +599,14 @@ UINMF_wrap = function(SCE_list,
     shared_features = Reduce(intersect, lapply(counts_list, rownames))
     has_unshared = unlist(lapply(counts_list, function(x) any(!rownames(x) %in% shared_features)))
     
+    # only use unshared mode if there are unshared features
+    unshared = any(has_unshared)
+    if (!unshared) {
+        message("no unshared features, running liger without UINMF")
+        }
+     
     # using parameter from vignette
-    data_liger <- selectGenes(data_liger, unshared = TRUE,
+    data_liger <- selectGenes(data_liger, unshared = unshared,
                               unshared.datasets = as.list(which(has_unshared)),
                               unshared.thresh = 0.4)
     
@@ -524,7 +617,7 @@ UINMF_wrap = function(SCE_list,
     ncomponentsSubset <- min(ncomponentsSubset, ncol(data_liger@scale.data[[1]]))
     
     # perform the UINMF, using parameters from vignette
-    data_liger <- optimizeALS(data_liger, k=ncomponentsSubset, use.unshared = TRUE)
+    data_liger <- optimizeALS(data_liger, k=ncomponentsSubset, use.unshared = unshared)
     
     # quantile normalise
     # use the default of the larger dataset
@@ -536,8 +629,44 @@ UINMF_wrap = function(SCE_list,
     return(H)
 }
 
+jaccard = function(x,y) {
+    union = length(union(x,y))
+    int = length(intersect(x,y))
+    return(int/union)
+}
 
+neighbourhoodJaccard = function(NN1, NN2) {
+    
+    # NN1 and NN2 are cells x n1 or n2 matrices, where n is the number of neighbours
+    # to consider (they need not be the same)
+    # entries are character of the cell within that neighbourhood
+    # output is jaccard similarity of these sets
+    # typically NN1 and NN2 are output from queryNamedKNN()
+    # rownames of NN1 are prioritised
+    
+    if (nrow(NN1) != nrow(NN2)) stop("NN should have same number of rows")
+    
+    NN1_list = split.data.frame(NN1, seq_len(nrow(NN1)))
+    NN2_list = split.data.frame(NN2, seq_len(nrow(NN2)))
+    
+    jac = mapply(jaccard, NN1_list, NN2_list)
+    names(jac) <- rownames(NN1)
+    
+    return(jac)
+}
 
+embeddingJaccard = function(embedding1, embedding2, k1 = 50, k2 = 50) {
+    # given two embeddings, with the same cells
+    # calculate the jaccard of the neighbourhoods
+    # ... passes to queryNamedKNN()
+    
+    NN1 = queryNamedKNN(embedding1, embedding1, k = k1)
+    NN2 = queryNamedKNN(embedding2, embedding2, k = k2)
+    
+    jac = neighbourhoodJaccard(NN1, NN2)
+    
+    return(jac)
+}
 
 
 
@@ -578,6 +707,17 @@ vectorMatch = function(vec, mat, vecnames){
     rownames(vecmat) <- rownames(mat)
     
     return(vecmat)
+}
+
+
+calculateUMAP_rnames = function(embedding, ...) {
+    # pass to calculateUMAP from scater
+    # but keep rownames
+    require(scater)
+    message("calculating UMAP...")
+    embedding_UMAP = calculateUMAP(t(embedding), ...)
+    rownames(embedding_UMAP) <- rownames(embedding)
+    return(embedding_UMAP)
 }
 
 # not used currently
@@ -757,4 +897,37 @@ markerArrayPlot = function(marker_array,
     }
     
     return(g)
+}
+
+lda_best = function(data, labels, nFold = 10, testPct = 0.2) {
+    
+    require(MASS)
+    
+    # with many features LDA can overfit to the training data
+    # perform LDA repeatedly, and calculate the cross
+    # validation error rate
+    # return the lda object with the best accuracy
+    
+    fitList = replicate(nFold, {
+        train = sample(c(TRUE,FALSE), length(labels), prob = c(1-testPct,testPct), replace = TRUE)
+        
+        data_train = data[train, ]
+        labels_train = labels[train]
+        
+        vars = rowMaxs(apply(fac2sparse(labels_train), 1, function(x)
+            rowWeightedVars(t(data_train), x)), na.rm = TRUE)
+        # if (any(vars == 0)) warning ("removing genes with zero intra-class variance")
+        features <- colnames(data_train)[vars > 0]
+        
+        fit = lda(data_train[,features], grouping = labels_train)
+        pred = predict(fit, data[!train, rownames(fit$scaling)])$class
+        true = labels[!train]
+        acc = mean(isEqual(pred, true))
+        return(list(acc = acc, fit = fit))
+    }, simplify = FALSE)
+    
+    best = which.max(unlist(lapply(fitList, "[[", "acc")))
+    
+    return(fitList[[best]][["fit"]])
+    
 }
