@@ -125,6 +125,33 @@ stabMapSubsetResidual = function(
 }
 
 
+getSVMModels = function(X, Ys) {
+    # X is a cells x features matrix
+    # of explanatory variables
+    # like a reducedDim of a SCE
+    # Ys is another different cells x 
+    # features matrix
+    # the cells in X and Y should be matched
+    # output is a list of model objects,
+    # of the same length as nrow(Y)
+    fitList = apply(Ys, 2, function(y) {
+        message("fitting...")
+        fit = svm(x = X, y = y, kernel = "polynomial", scale = FALSE)
+        return(fit)
+    })
+    return(fitList)
+}
+
+"%pred%" <- function(data, models) {
+    # data is a features x cells matrix
+    # models is a list of univariate models with the features
+    # as explanatory variables
+    # output is a matrix with
+    # rows equal to length(models) and columns are
+    # cells
+    do.call(rbind, lapply(models, predict, t(data)))
+}
+
 stabMapComparative = function(
     # SCE_X,
     # SCE_Y,
@@ -176,7 +203,13 @@ stabMapComparative = function(
         # Fit lasso models with lambda selected with CV to estimate the best 
         # linear combination of PCs among the subset features
         
+        if (FALSE) {
         coefs = mapply(sparseCoef, PCs, PCs_genes, SIMPLIFY = FALSE)
+        }
+        
+        # test with SVM
+        require(e1071)
+        coefs = mapply(getSVMModels, PCs_genes, PCs, SIMPLIFY = FALSE)
         
         # coefList_Y = list()
         # for (i in seq_len(ncol(PCs_Y))) {
@@ -212,6 +245,20 @@ stabMapComparative = function(
     
     # d_sub = d[rownames(referencePCs_genes_loadings),]
     
+    # test with SVM:
+    if (FALSE) {
+    matMult = function(m1_rnames, m2, m3, m1) {
+        t(m1[m1_rnames,]) %*% m2 %pred% m3 
+    }
+    
+    emb_list = mapply(matMult,
+                      m1_rnames = lapply(PCs_genes_loadings, rownames),
+                      m2 = PCs_genes_loadings,
+                      m3 = coefs,
+                      MoreArgs = list(m1 = all_assay))
+    }
+    
+    if (TRUE) {
     matMult = function(m1_rnames, m2, m3, m1) {
         t(m1[m1_rnames,]) %*% m2 %*% m3 
     }
@@ -221,6 +268,7 @@ stabMapComparative = function(
                       m2 = PCs_genes_loadings,
                       m3 = coefs,
                       MoreArgs = list(m1 = all_assay))
+    }
     
     # emb_X = t(all_assay_sub_X) %*% PCs_X_genes_loadings %*% coef_X
     # emb_Y = t(all_assay_sub_Y) %*% PCs_Y_genes_loadings %*% coef_Y
@@ -339,6 +387,7 @@ stabMapLabelled = function(
     
     require(Matrix)
     require(MASS)
+    # require(matrixStats)
     
     # selectionLFC is a log-fold change to use for selecting features among genes first
     
@@ -377,6 +426,8 @@ stabMapLabelled = function(
     # vars = apply(assay(referenceSCE, assayNameReference)[genes,], 1, function(x)
     # max(tapply(x, colData(referenceSCE)[,grouping], var), na.rm = TRUE))
     # genes <- genes[vars > 0]
+    
+    assay(referenceSCE, assayNameReference) <- as.matrix(assay(referenceSCE, assayNameReference))
     
     vars = rowMaxs(apply(fac2sparse(colData(referenceSCE)[,labels]), 1, function(x)
         rowWeightedVars(assay(referenceSCE, assayNameReference)[features,],
@@ -509,7 +560,7 @@ Harmony_batchFactor = function(embedding,
     
     batchFactor_used = batchFactor[rownames(embedding)]
     
-    out = HarmonyMatrix(t(embedding), batchFactor_used, do_pca = FALSE, ...)
+    out = HarmonyMatrix(as.matrix(t(embedding)), batchFactor_used, do_pca = FALSE, ...)
     resub_corrected = t(out)
     
     return(resub_corrected)

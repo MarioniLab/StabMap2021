@@ -1,0 +1,10 @@
+# can be run from either within the scripts or the examples directory
+library(scater)
+library(scran)
+library(ggplot2)
+library(patchwork)
+library(batchelor)
+library(matrixStats)
+source("../scripts/adaptiveKNN.R")
+source("../scripts/StabMap_functions.R")
+source("../scripts/StabMap_generalised.R")
