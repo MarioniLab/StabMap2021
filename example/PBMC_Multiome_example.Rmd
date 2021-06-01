@@ -1,0 +1,599 @@
+---
+title: "StabMap simulation: PBMC Multiome"
+author: "Shila Ghazanfar"
+date: "28/05/2021"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(SingleCellMultiModal)
+library(reshape)
+source("../scripts/initialise.R")
+```
+
+Data
+
+```{r}
+mae <- scMultiome("pbmc_10x", mode = "*", dry.run = FALSE, format = "MTX")
+
+## ---- echo=FALSE--------------------------------------------------------------
+# gg_color_hue <- function(n) {
+#   hues = seq(15, 375, length = n + 1)
+#   hcl(h = hues, l = 65, c = 100)[1:n]
+# }
+# colors <- gg_color_hue(length(unique(mae$celltype)))
+colors <- viridis::viridis(length(unique(mae$celltype)))
+names(colors) <- unique(mae$celltype)
+
+## -----------------------------------------------------------------------------
+mae
+
+## -----------------------------------------------------------------------------
+upsetSamples(mae)
+
+## -----------------------------------------------------------------------------
+head(colData(mae))
+
+## -----------------------------------------------------------------------------
+dim(experiments(mae)[["rna"]])
+
+## -----------------------------------------------------------------------------
+names(experiments(mae))
+
+## -----------------------------------------------------------------------------
+sce.rna <- experiments(mae)[["rna"]]
+
+# Normalisation
+sce.rna <- logNormCounts(sce.rna)
+
+# Feature selection
+decomp <- modelGeneVar(sce.rna)
+hvgs <- rownames(decomp)[decomp$mean>0.01 & decomp$p.value <= 0.05]
+sce.rna <- sce.rna[hvgs,]
+
+# PCA
+sce.rna <- scater::runPCA(sce.rna, ncomponents = 25)
+
+# UMAP
+set.seed(42)
+sce.rna <- scater::runUMAP(sce.rna, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
+plotUMAP(sce.rna, colour_by="celltype", point_size=0.5, point_alpha=1)
+
+## -----------------------------------------------------------------------------
+dim(experiments(mae)[["atac"]])
+
+## -----------------------------------------------------------------------------
+sce.atac <- experiments(mae)[["atac"]]
+
+# Normalisation
+sce.atac <- logNormCounts(sce.atac)
+
+# Feature selection
+decomp <- modelGeneVar(sce.atac)
+hvgs <- rownames(decomp)[decomp$mean>0.25]
+sce.atac <- sce.atac[hvgs,]
+
+# PCA
+sce.atac <- scater::runPCA(sce.atac, ncomponents = 25)
+
+# UMAP
+set.seed(42)
+sce.atac <- scater::runUMAP(sce.atac, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
+plotUMAP(sce.atac, colour_by="celltype", point_size=0.5, point_alpha=1)
+
+######## take atac peak annotation from:
+# ftp://ftp.ebi.ac.uk/pub/databases/mofa/10x_rna_atac_vignette/atac_peak_annotation.tsv
+# following vignette from MOFA+ 
+# https://raw.githack.com/bioFAM/MOFA2_tutorials/master/R_tutorials/10x_scRNA_scATAC.html
+# classify each of the promoter peaks for a gene as an overlapping feature to then run in to 
+# StabMap
+```
+
+
+Get peak info (downloded file)
+
+```{r}
+
+peakInfo = read.delim("/Users/ghazan01/Downloads/atac_peak_annotation.tsv", header = TRUE, row.names = 1)
+peakNames = rownames(peakInfo)
+table(rownames(sce.atac) %in% peakNames)
+
+####
+
+ind = (gsub(";.*", "", peakInfo[, "gene"]) %in% rowData(sce.rna)[,"id"]) &
+  (peakInfo$peak_type == "promoter")
+
+peakInfo$gene_new <- rownames(peakInfo)
+peakInfo[ind,"gene_new"] <- peakInfo[ind,"gene"]
+
+length(intersect(rownames(sce.atac), rownames(sce.rna)))
+
+# re-set rownames so there is some degree of matching
+rnames.atac = peakInfo[rownames(sce.atac), "gene_new"]
+rnames.rna = rowData(sce.rna)[,"id"]
+
+length(intersect(rnames.atac, rnames.rna))
+length(setdiff(rnames.atac, rnames.rna))
+length(setdiff(rnames.rna, rnames.atac))
+
+rownames(sce.rna) <- rnames.rna
+rownames(sce.atac) <- rnames.atac
+
+length(intersect(rownames(sce.atac), rownames(sce.rna)))
+
+nrow(sce.atac)
+length(unique(rownames(sce.atac)))
+sce.atac <- sce.atac[!duplicated(rownames(sce.atac)),]
+
+nrow(sce.rna)
+length(unique(rownames(sce.rna)))
+sce.rna <- sce.rna[!duplicated(rownames(sce.rna)),]
+
+# give the ATAC cells a new suffix
+colnames(sce.atac) <- paste0(colnames(sce.atac), "_atac")
+
+```
+
+
+Build input data for StabMap
+
+```{r}
+
+# input data
+SCE_list = list(atac = sce.atac,
+                rna = sce.rna)
+assayNames = list(atac = "logcounts",
+                  rna = "logcounts")
+assay_list = mapply(assay, SCE_list, assayNames)
+counts_list = mapply(assay, SCE_list, "counts")
+labels_list = list(rna = sce.rna$celltype)
+grouping = "celltype"
+k = 50
+
+ct_all = unlist(lapply(lapply(SCE_list, colData), "[", , grouping))
+names(ct_all) <- unlist(lapply(lapply(SCE_list, colData), rownames))
+
+celltype_colours = colors
+
+
+plotFeatureOverlaps(assay_list)
+```
+
+Perform StabMap and other methods
+
+```{r}
+
+# PCA embedding (naive)
+PC_embedding = mapPCA(assay_list = assay_list,
+                      nPCs = k)
+dim(PC_embedding)
+# saveRDS(PC_embedding, file = "../../PBMC_Multiome/PC_embedding.Rds")
+
+# UINMF embedding
+UINMF_embedding = UINMF_wrap(counts_list = counts_list,
+                             ncomponentsSubset = k)
+# saveRDS(UINMF_embedding, file = "../../PBMC_Multiome/UINMF_embedding.Rds")
+
+# liger embedding (i.e. no unshared features)
+genes = Reduce(intersect, lapply(SCE_list, rownames))
+length(genes)
+SCE_list_sub = lapply(SCE_list, function(x) x[genes,])
+liger_embedding = UINMF_wrap(SCE_list = SCE_list_sub,
+                             ncomponentsSubset = k)
+# saveRDS(liger_embedding, file = "../../PBMC_Multiome/liger_embedding.Rds")
+
+# LD embedding
+# LD_embedding = stabMapLabelled(referenceSCE = sce.rna,
+#                                query_assay = assay_list[["atac"]],
+#                                labels = grouping,
+#                                assayNameReference = assayNames[["rna"]],
+#                                prop_explained = 1)
+# dim(LD_embedding)
+# saveRDS(LD_embedding, file = "../../PBMC_Multiome/LD_embedding.Rds")
+LD_embedding = stabMapGeneralised(assay_list,
+                                  labels_list = labels_list,
+                                  projectAll = TRUE)
+dim(LD_embedding)
+
+
+# stable comparative
+SC_embedding = stabMapGeneralised(assay_list,
+                                  projectAll = TRUE)
+dim(SC_embedding)
+# saveRDS(SC_embedding, file = "../../PBMC_Multiome/SC_embedding.Rds")
+
+# treating RNA as the reference modality
+# SC_ref_embedding = stabMapComparative(assay_list,
+#                                       stabilise = c(TRUE, FALSE))
+# dim(SC_ref_embedding)
+# saveRDS(SC_ref_embedding, file = "../../PBMC_Multiome/SC_ref_embedding.Rds")
+
+# both LD and stabmap
+# LD_SC_embedding = cbind(LD_embedding, SC_embedding)
+# saveRDS(LD_SC_embedding, file = "../../PBMC_Multiome/LD_SC_embedding.Rds")
+
+# MultiMAP
+MultiMAP_embedding = MultiMAP_wrap(assay_list, verbose = TRUE)
+# saveRDS(MultiMAP_embedding, file = "../../PBMC_Multiome/MultiMAP_embedding.Rds")
+
+
+embeddings_names = c("StabMap" = "SC_embedding",
+                     "StabMap_LD" = "LD_embedding",
+                     "PCA" = "PC_embedding",
+                     "UINMF" = "UINMF_embedding",
+                     "MultiMAP" = "MultiMAP_embedding",
+                     # "StabMap_ref" = "SC_ref_embedding",
+                     # "StabMap_LD_only" = "LD_embedding",
+                     "LIGER" = "liger_embedding"
+)
+
+no_batch = c("MultiMAP_embedding", "UINMF_embedding", "liger_embedding")
+
+
+
+
+
+```
+
+
+Batch correct and plot
+
+```{r}
+
+type = factor(ifelse(grepl("atac", rownames(PC_embedding)),
+                     "ATAC", "RNA"))
+names(type) <- rownames(PC_embedding)
+table(type)
+batchFactor = type
+
+# batch correct
+sapply(embeddings_names, function(nm) {
+  print(nm)
+  # can include optional flags for certain embeddings to 
+  # not be passed through a batch correction stage
+  # e.g. from MultiMAP
+  if (nm %in% no_batch) {
+    # i.e. do nothing
+    assign(paste0(nm, "_corrected"), get(nm), envir = .GlobalEnv)
+  } else {
+    assign(paste0(nm, "_corrected"), reducedMNN_batchFactor(get(nm), batchFactor),
+           envir = .GlobalEnv)
+  }
+}, simplify = FALSE)
+
+
+
+# plot
+pl = function(embedding_UMAP, name, coltype = "type") {
+  ind = sample(rownames(embedding_UMAP))
+  df = data.frame(cell = ind,
+                  U1 = embedding_UMAP[ind,1],
+                  U2 = embedding_UMAP[ind,2],
+                  type = factor(type[ind]),
+                  ctype = ct_all[ind])
+  df$col = df[,coltype]
+  p = ggplot(df, aes(x = U1, y = U2, colour = col)) + 
+    geom_point(size = 0.5, alpha = 0.5) +
+    theme_classic() + 
+    theme(legend.position = "none") +
+    coord_fixed() +
+    ggtitle(name)
+  
+  if (coltype == "ctype") {
+    p <- p + scale_colour_manual(values = celltype_colours)
+  }
+  
+  return(p)
+}
+
+embeddings_corrected_UMAP = sapply(embeddings_names, function(nm){
+  if (nm == "MultiMAP_embedding") return(get(nm)) # i.e. do nothing
+  calculateUMAP_rnames(get(paste0(nm, "_corrected")))
+}, simplify = FALSE)
+
+p_corrected = 
+  wrap_plots(
+    c(
+      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
+      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+    )) +
+  plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
+p_corrected
+
+```
+
+Predict cell type labels
+
+```{r}
+
+# predict cell type labels using knn with k = 5
+# treat RNA as the reference
+referenceLabels = colData(sce.rna)[,grouping]
+names(referenceLabels) = colnames(sce.rna)
+
+queryLabels = colData(sce.atac)[,grouping]
+names(queryLabels) = colnames(sce.atac)
+
+# calculate accuracy of the query cells
+embeddings_accuracy = sapply(embeddings_names, function(nm) {
+  print(nm)
+  
+  # only use cells with labels
+  data_all = get(paste0(nm, "_corrected"))
+  labels_train = referenceLabels[!is.na(referenceLabels)]
+  
+  knn_out = embeddingKNN(data_all,
+                         labels_train,
+                         type = "uniform_fixed",
+                         k_values = 5)
+  
+  acc = mean(isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels), na.rm = TRUE)
+  
+  acc_bal = mean(unlist(lapply(split(isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels), queryLabels), mean, na.rm = TRUE)))
+  
+  return(list(acc = acc, acc_bal = acc_bal))
+}, simplify = FALSE)
+
+
+res = data.frame(
+  type = names(embeddings_names),
+  Accuracy = unlist(lapply(embeddings_accuracy, "[[", "acc")),
+  Accuracy_balanced = unlist(lapply(embeddings_accuracy, "[[", "acc_bal"))
+)
+res <- res[order(res$Accuracy_balanced, decreasing = TRUE),]
+res$type <- factor(res$type, levels = res$type)
+
+typesToKeep = c("MultiMAP",
+                "PCA",
+                "StabMap",
+                "StabMap_LD",
+                "UINMF")
+
+g1 = ggplot(subset(res, type %in% typesToKeep), aes(x = type, y = Accuracy_balanced)) + 
+  theme_classic() +
+  stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
+  # stat_summary(aes(group = type, colour = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+  labs(fill = "") +
+  theme_classic() +
+  NULL
+# g1
+# print(g1)
+g2 = ggplot(subset(res, type %in% typesToKeep), aes(x = type, y = Accuracy)) + 
+  theme_classic() +
+  stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
+  # stat_summary(aes(group = type, colour = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+  labs(fill = "") +
+  xlab("") +
+  theme_classic() +
+  NULL
+g2
+
+g1 + g2
+
+```
+
+Jaccard neighbourhood, large jaccard is better
+
+```{r}
+k1 = 50
+# k1 = 200
+k2 = k1
+
+embeddings_jaccard = sapply(embeddings_names, function(nm) {
+  
+  print(nm)
+  
+  embedding = get(paste0(nm, "_corrected"))
+  # split into two matching matrices
+  is_RNA = !grepl("atac", rownames(embedding))
+  embedding_RNA = embedding[is_RNA,]
+  embedding_ATAC = embedding[!is_RNA,]
+  rownames(embedding_ATAC) <- gsub("_atac", "", rownames(embedding_ATAC))
+  cells = intersect(rownames(embedding_RNA), rownames(embedding_ATAC))
+  embedding_RNA_common = embedding_RNA[cells,]
+  embedding_ATAC_common = embedding_ATAC[cells,]
+  
+  embedding_jaccard = embeddingJaccard(embedding_RNA_common, embedding_ATAC_common,
+                                       k1 = k1, k2 = k2)
+  return(embedding_jaccard)
+}, simplify = FALSE)
+# names(embeddings_jaccard) <-  gsub(".+/|_embedding.Rds","",names(embeddings_jaccard))
+
+# also want to compare against PC separate, using all data available
+pc_atac = calculatePCA(sce.atac)
+pc_rna = calculatePCA(sce.rna)
+rownames(pc_atac) <- gsub("_atac", "", rownames(pc_atac))
+cells = intersect(rownames(pc_atac), rownames(pc_rna))
+pc_rna_common = pc_rna[cells,]
+pc_atac_common = pc_atac[cells,]
+
+embeddings_jaccard[["PC_separate"]] <- embeddingJaccard(
+  pc_rna_common, pc_atac_common,
+  k1 = k1, k2 = k2)
+
+emb = sort(unlist(lapply(embeddings_jaccard, median)))
+emb
+boxplot(embeddings_jaccard[names(emb)], ylab = "Jaccard similarity", main = k1)
+# }
+
+df_jaccard = data.frame(type = rep(names(embeddings_jaccard), times = unlist(lapply(embeddings_jaccard, length))),
+                        jaccard = unlist(embeddings_jaccard)
+)
+df_jaccard$type <- factor(df_jaccard$type, levels = names(emb))
+
+g = ggplot(subset(df_jaccard, type %in% c(typesToKeep, "PC_separate")), aes(x = type, y = jaccard, fill = type)) + 
+  theme_classic() +
+  geom_boxplot() +
+  labs(fill = "") +
+  ylab("Jaccard similarity between RNA and ATAC modalities") +
+  xlab("") +
+  NULL
+print(g)
+
+```
+
+Closest neighbour, how many other cells until you reach the corresponding cell
+
+```{r}
+
+# nei_pos_list = list()
+k_max = 1000
+
+nei_pos_list = sapply(embeddings_names, function(nm) {
+  
+  print(nm)
+  
+  embedding = get(paste0(nm, "_corrected"))
+  
+  # embedding = embeddings_corrected[[i]]
+  
+  nei_atac = queryNamedKNN(embedding[!grepl("_atac", rownames(embedding)),],
+                           embedding[grepl("_atac", rownames(embedding)),],
+                           k = k_max)
+  nei_atac_bin = apply(nei_atac, 2, function(x) isEqual(gsub("_atac", "", rownames(nei_atac)), x))
+  nei_atac_pos = max.col(nei_atac_bin, ties.method = "last")
+  mean(nei_atac_pos)
+  nei_rna = queryNamedKNN(embedding[grepl("_atac", rownames(embedding)),],
+                          embedding[!grepl("_atac", rownames(embedding)),],
+                          k = k_max)
+  nei_rna_bin = apply(nei_rna, 2, function(x) isEqual(paste0(rownames(nei_rna), "_atac"), x))
+  nei_rna_pos = max.col(nei_rna_bin, ties.method = "last")
+  mean(nei_rna_pos)
+  
+  nei_pos = c(nei_atac_pos, nei_rna_pos)
+  names(nei_pos) <- c(rownames(nei_atac), rownames(nei_rna))
+  
+  # nei_pos_list[[i]] <- nei_pos
+  return(nei_pos)
+  
+}, simplify = FALSE)
+
+# names(nei_pos_list) <- names(embeddings_corrected)
+# here a smaller number of nei is better
+sort(unlist(lapply(nei_pos_list, function(x) sum(x < 10))))
+sort(unlist(lapply(nei_pos_list, mean)))
+boxplot(nei_pos_list, las = 2)
+
+
+xvals = c(5,10,20,30,50,100,200,500,1000)
+nei_x = sapply(xvals,
+               function(y) unlist(lapply(nei_pos_list, function(x) sum(x < y))))
+colnames(nei_x) <- xvals
+
+nei_df = reshape::melt(nei_x)
+nei_df$X1 <- factor(rownames(nei_x), levels = names(sort(nei_x[,1], decreasing = TRUE)))
+
+ggplot(nei_df, aes(x = X2, y = value, group = X1)) + 
+  theme_classic() +
+  geom_line(aes(colour = X1, linetype = X1), size = 1) + 
+  scale_y_log10() +
+  scale_x_log10() +
+  labs(colour = "", linetype = "") +
+  xlab("X") +
+  ylab("Number of cells with at most X cells closer to matching cell") +
+  NULL
+
+
+```
+
+Split UMAP plot
+
+```{r}
+
+splitMultiomeUMAP = function(UMAP){
+  is_RNA = !grepl("atac", rownames(UMAP))
+  UMAP_RNA = UMAP[is_RNA,]
+  UMAP_ATAC = UMAP[!is_RNA,]
+  rownames(UMAP_ATAC) <- gsub("_atac", "", rownames(UMAP_ATAC))
+
+  cells = intersect(rownames(UMAP_RNA), rownames(UMAP_ATAC))
+  UMAP_split = cbind(UMAP_RNA[cells,], UMAP_ATAC[cells,])
+  colnames(UMAP_split) <- c("UMAP1_RNA", "UMAP2_RNA", "UMAP1_ATAC", "UMAP2_ATAC")
+  return(UMAP_split)
+}
+
+
+```
+
+
+Experimental:
+
+```{r, eval = FALSE}
+
+# experimental, generate a side-by-side to find the corresponding
+# cells in the UMAP
+library(ggiraph)
+
+i = "StabMap"
+
+df = as.data.frame(splitMultiomeUMAP(embeddings_corrected_UMAP[[i]]))
+df$cell = rownames(df)
+df$celltype = colData(sce.rna[,rownames(df)])[,grouping]
+
+g0 = pl(embeddings_corrected_UMAP[[i]], i)
+
+gg0 <- ggplot(df) +
+  theme_classic() +
+  geom_point_interactive(aes(x = UMAP1_RNA, y = UMAP2_RNA, 
+                             tooltip = cell, data_id = cell), 
+                         color = "red", size = .5) +
+  geom_point_interactive(aes(x = UMAP1_ATAC, y = UMAP2_ATAC, 
+                             tooltip = cell, data_id = cell), 
+                         color = "blue", size = .5) +
+  theme(legend.position = "none") + 
+  ggtitle(paste0(i, " - all"))
+
+gg1 <- ggplot(df) +
+  theme_classic() +
+  geom_point_interactive(aes(x = UMAP1_ATAC, y = UMAP2_ATAC), colour = "grey", size = .5) +
+  geom_point_interactive(aes(x = UMAP1_RNA, y = UMAP2_RNA, color = celltype, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme(legend.position = "none") + 
+  ggtitle(paste0(i, " - RNA"))
+
+gg2 <- ggplot(df) +
+  theme_classic() +
+  geom_point_interactive(aes(x = UMAP1_RNA, y = UMAP2_RNA), colour = "grey", size = .5) +
+  geom_point_interactive(aes(x = UMAP1_ATAC, y = UMAP2_ATAC, color = celltype, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme(legend.position = "none") +
+  ggtitle(paste0(i, " - ATAC"))
+
+g0 + gg1 + gg2
+
+girafe(ggobj = plot_grid(gg0, gg1, gg2), width_svg = 8, height_svg = 4,
+       options = list(
+         opts_selection(type = "multiple",
+                        css = "fill:#FF3333;stroke:black;",
+                        only_shiny = FALSE)
+       ))
+
+
+```
+
+
+Finish
+
+```{r}
+sessionInfo()
+```
+
