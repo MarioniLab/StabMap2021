@@ -1,7 +1,7 @@
 ---
-title: "StabMap simulation: PBMC Multiome"
+title: "StabMap simulation: PBMC Multiome de-matched cells"
 author: "Shila Ghazanfar"
-date: "28/05/2021"
+date: "23/09/2021"
 output:
        html_document:
                      toc: true
@@ -15,7 +15,7 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
-                      cache = FALSE, cache.lazy = FALSE)
+                      cache = TRUE, cache.lazy = FALSE)
 ```
 
 ```{r}
@@ -27,39 +27,73 @@ Load scripts and packages.
 ```{r}
 library(SingleCellMultiModal)
 library(reshape)
+library(nord)
+library(ggpubr)
+library(Matrix)
+library(scattermore)
 source("../scripts/initialise.R")
 ```
 
-Data
+# ATAC normalisation function
+
+Normalise ATAC by binarisation, followed by TF-IDF normalisation, function with 
+thanks to Ricard Argelaguet:
+
+```{r}
+# mtx is the binary peak matrix with dim (npeaks,ncells)
+#'  method=1: The TF-IDF implementation used by Stuart & Butler et al. 2019. This computes \eqn{\log(TF \times IDF)}.
+#'  method=2: The TF-IDF implementation used by Cusanovich & Hill et al. 2018. This computes \eqn{TF \times (\log(IDF))}.
+#'  method=3: The log-TF method used by Andrew Hill. This computes \eqn{\log(TF) \times \log(IDF)}.
+tfidf <- function(mtx, method = 1, scale.factor = 1e4) {
+  npeaks <- colSums(mtx)
+  if (any(npeaks == 0)) {
+    warning("Some cells contain 0 total counts")
+  }
+  tf <- tcrossprod(mtx, y = Diagonal(x=1/npeaks))
+  rsums <- rowSums(mtx)
+  if (any(rsums == 0)) {
+    warning("Some features contain 0 total counts")
+  }
+  idf <- ncol(mtx) / rsums
+  if (method == 2) {
+    idf <- log(1 + idf)
+  } else if (method == 3) {
+    tf <- log1p(tf * scale.factor)
+    idf <- log(1 + idf)
+  }
+  mtx.tfidf <- Diagonal(n = length(idf), x = idf) %*% tf
+  if (method == 1) {
+    mtx.tfidf <- log1p(mtx.tfidf * scale.factor)
+  }
+  colnames(mtx.tfidf) <- colnames(mtx)
+  rownames(mtx.tfidf) <- rownames(mtx)
+  # set NA values to 0
+  mtx.tfidf[is.na(mtx.tfidf)] <- 0
+  return(mtx.tfidf)
+}
+```
+
+Data using Bioconductor SingleCellMultiModal package
 
 ```{r}
 mae <- scMultiome("pbmc_10x", mode = "*", dry.run = FALSE, format = "MTX")
 
-## ---- echo=FALSE--------------------------------------------------------------
-# gg_color_hue <- function(n) {
-#   hues = seq(15, 375, length = n + 1)
-#   hcl(h = hues, l = 65, c = 100)[1:n]
-# }
-# colors <- gg_color_hue(length(unique(mae$celltype)))
 colors <- viridis::viridis(length(unique(mae$celltype)))
-names(colors) <- unique(mae$celltype)
+names(colors) <- sort(unique(as.character(mae$celltype)))
 
-## -----------------------------------------------------------------------------
+modality_colours = nord(palette = "algoma_forest", 5)[c(1,3,4)]
+names(modality_colours) = c("RNA", "ATAC", "Multiome")
+
 mae
 
-## -----------------------------------------------------------------------------
 upsetSamples(mae)
 
-## -----------------------------------------------------------------------------
 head(colData(mae))
 
-## -----------------------------------------------------------------------------
 dim(experiments(mae)[["rna"]])
 
-## -----------------------------------------------------------------------------
 names(experiments(mae))
 
-## -----------------------------------------------------------------------------
 sce.rna <- experiments(mae)[["rna"]]
 
 # Normalisation
@@ -68,6 +102,9 @@ sce.rna <- logNormCounts(sce.rna)
 # Feature selection
 decomp <- modelGeneVar(sce.rna)
 hvgs <- rownames(decomp)[decomp$mean>0.01 & decomp$p.value <= 0.05]
+
+length(hvgs)
+
 sce.rna <- sce.rna[hvgs,]
 
 # PCA
@@ -77,57 +114,62 @@ sce.rna <- scater::runPCA(sce.rna, ncomponents = 25)
 set.seed(42)
 sce.rna <- scater::runUMAP(sce.rna, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
 plotUMAP(sce.rna, colour_by="celltype", point_size=0.5, point_alpha=1)
-
-## -----------------------------------------------------------------------------
-dim(experiments(mae)[["atac"]])
-
-## -----------------------------------------------------------------------------
-sce.atac <- experiments(mae)[["atac"]]
-
-# Normalisation
-sce.atac <- logNormCounts(sce.atac)
-
-# Feature selection
-decomp <- modelGeneVar(sce.atac)
-hvgs <- rownames(decomp)[decomp$mean>0.25]
-sce.atac <- sce.atac[hvgs,]
-
-# PCA
-sce.atac <- scater::runPCA(sce.atac, ncomponents = 25)
-
-# UMAP
-set.seed(42)
-sce.atac <- scater::runUMAP(sce.atac, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
-plotUMAP(sce.atac, colour_by="celltype", point_size=0.5, point_alpha=1)
-
-######## take atac peak annotation from:
-# ftp://ftp.ebi.ac.uk/pub/databases/mofa/10x_rna_atac_vignette/atac_peak_annotation.tsv
-# following vignette from MOFA+ 
-# https://raw.githack.com/bioFAM/MOFA2_tutorials/master/R_tutorials/10x_scRNA_scATAC.html
-# classify each of the promoter peaks for a gene as an overlapping feature to then run in to 
-# StabMap
 ```
 
+Peak annotation downloaded from the MOFA vignette, file available here ftp://ftp.ebi.ac.uk/pub/databases/mofa/10x_rna_atac_vignette/atac_peak_annotation.tsv
+The MOFA+ vignette itself is available here
+https://raw.githack.com/bioFAM/MOFA2_tutorials/master/R_tutorials/10x_scRNA_scATAC.html
 
-Get peak info (downloded file)
+Identify peaks located in promoter regions of known genes.
 
 ```{r}
-
-peakInfo = read.delim("/Users/ghazan01/Downloads/atac_peak_annotation.tsv", header = TRUE, row.names = 1)
+peakInfo = read.delim("../../PBMC_Multiome/atac_peak_annotation.tsv", header = TRUE, row.names = 1)
 peakNames = rownames(peakInfo)
-table(rownames(sce.atac) %in% peakNames)
-
-####
 
 ind = (gsub(";.*", "", peakInfo[, "gene"]) %in% rowData(sce.rna)[,"id"]) &
   (peakInfo$peak_type == "promoter")
 
 peakInfo$gene_new <- rownames(peakInfo)
 peakInfo[ind,"gene_new"] <- peakInfo[ind,"gene"]
+```
 
+```{r}
+dim(experiments(mae)[["atac"]])
+
+sce.atac <- experiments(mae)[["atac"]]
+
+# Normalise using TF-IDF
+logcounts(sce.atac) <- tfidf(1*(counts(sce.atac)>0))
+
+# Feature selection using highly variable peaks
+# And adding matching peaks to genes
+decomp <- modelGeneVar(sce.atac)
+plot(decomp$mean, decomp$total)
+hvgs <- rownames(decomp)[decomp$mean>0.25
+                         & decomp$p.value <= 0.05
+                         ]
+length(hvgs)
+# ATAC HVGs and all promoter peaks of RNA HVGs
+hvgs_all = union(hvgs, intersect(rownames(peakInfo)[ind],
+                                 rownames(decomp)[decomp$mean>0.25
+                         ]))
+length(hvgs_all)
+sce.atac <- sce.atac[hvgs_all,]
+
+# PCA of ATAC modality
+sce.atac <- scater::runPCA(sce.atac, ncomponents = 50)
+
+# UMAP
+set.seed(42)
+sce.atac <- scater::runUMAP(sce.atac, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
+plotUMAP(sce.atac, colour_by="celltype", point_size=0.5, point_alpha=1)
+```
+
+Match feature names for mosaic data integration
+
+```{r}
 length(intersect(rownames(sce.atac), rownames(sce.rna)))
 
-# re-set rownames so there is some degree of matching
 rnames.atac = peakInfo[rownames(sce.atac), "gene_new"]
 rnames.rna = rowData(sce.rna)[,"id"]
 
@@ -151,14 +193,12 @@ sce.rna <- sce.rna[!duplicated(rownames(sce.rna)),]
 # give the ATAC cells a new suffix
 colnames(sce.atac) <- paste0(colnames(sce.atac), "_atac")
 
+length(intersect(rownames(sce.atac), rownames(sce.rna)))
 ```
 
-
-Build input data for StabMap
+Build input data for StabMap and other methods.
 
 ```{r}
-
-# input data
 SCE_list = list(atac = sce.atac,
                 rna = sce.rna)
 assayNames = list(atac = "logcounts",
@@ -174,158 +214,178 @@ names(ct_all) <- unlist(lapply(lapply(SCE_list, colData), rownames))
 
 celltype_colours = colors
 
-
 plotFeatureOverlaps(assay_list)
+
+g = plotFeatureOverlaps(assay_list)
+pdf(paste0("../../Figures/raw/PBMC_multiome_upset.pdf"), 
+    width = 4, height = 3)
+print(g)
+dev.off()
 ```
 
-Perform StabMap and other methods
+Perform StabMap and other methods.
 
 ```{r}
-
 # PCA embedding (naive)
 PC_embedding = mapPCA(assay_list = assay_list,
                       nPCs = k)
 dim(PC_embedding)
-# saveRDS(PC_embedding, file = "../../PBMC_Multiome/PC_embedding.Rds")
 
 # UINMF embedding
 UINMF_embedding = UINMF_wrap(counts_list = counts_list,
                              ncomponentsSubset = k)
-# saveRDS(UINMF_embedding, file = "../../PBMC_Multiome/UINMF_embedding.Rds")
 
-# liger embedding (i.e. no unshared features)
-genes = Reduce(intersect, lapply(SCE_list, rownames))
-length(genes)
-SCE_list_sub = lapply(SCE_list, function(x) x[genes,])
-liger_embedding = UINMF_wrap(SCE_list = SCE_list_sub,
-                             ncomponentsSubset = k)
-# saveRDS(liger_embedding, file = "../../PBMC_Multiome/liger_embedding.Rds")
-
-# LD embedding
-# LD_embedding = stabMapLabelled(referenceSCE = sce.rna,
-#                                query_assay = assay_list[["atac"]],
-#                                labels = grouping,
-#                                assayNameReference = assayNames[["rna"]],
-#                                prop_explained = 1)
-# dim(LD_embedding)
-# saveRDS(LD_embedding, file = "../../PBMC_Multiome/LD_embedding.Rds")
-LD_embedding = stabMapGeneralised(assay_list,
-                                  labels_list = labels_list,
-                                  projectAll = TRUE)
-dim(LD_embedding)
-
-
-# stable comparative
+# StabMap
 SC_embedding = stabMapGeneralised(assay_list,
-                                  projectAll = TRUE)
+                                  projectAll = TRUE,
+                                  scale.center = TRUE,
+                                  scale.scale = TRUE)
 dim(SC_embedding)
-# saveRDS(SC_embedding, file = "../../PBMC_Multiome/SC_embedding.Rds")
 
-# treating RNA as the reference modality
-# SC_ref_embedding = stabMapComparative(assay_list,
-#                                       stabilise = c(TRUE, FALSE))
-# dim(SC_ref_embedding)
-# saveRDS(SC_ref_embedding, file = "../../PBMC_Multiome/SC_ref_embedding.Rds")
-
-# both LD and stabmap
-# LD_SC_embedding = cbind(LD_embedding, SC_embedding)
-# saveRDS(LD_SC_embedding, file = "../../PBMC_Multiome/LD_SC_embedding.Rds")
+# Give equal weighting to RNA and ATAC
+SC_embedding <- reWeightEmbedding(SC_embedding)
 
 # MultiMAP
 MultiMAP_embedding = MultiMAP_wrap(assay_list, verbose = TRUE)
-# saveRDS(MultiMAP_embedding, file = "../../PBMC_Multiome/MultiMAP_embedding.Rds")
-
 
 embeddings_names = c("StabMap" = "SC_embedding",
-                     "StabMap_LD" = "LD_embedding",
                      "PCA" = "PC_embedding",
                      "UINMF" = "UINMF_embedding",
-                     "MultiMAP" = "MultiMAP_embedding",
-                     # "StabMap_ref" = "SC_ref_embedding",
-                     # "StabMap_LD_only" = "LD_embedding",
-                     "LIGER" = "liger_embedding"
+                     "MultiMAP" = "MultiMAP_embedding"
 )
 
-no_batch = c("MultiMAP_embedding", "UINMF_embedding", "liger_embedding")
-
-
-
-
-
+# these methods already perform batch correction
+no_batch = c("MultiMAP_embedding", "UINMF_embedding")
+# this method already gives 2D embedding
+no_umap = c("MultiMAP_embedding")
 ```
 
+Batch correct and plot.
 
-Batch correct and plot
-
-```{r}
-
+```{r, include=FALSE}
 type = factor(ifelse(grepl("atac", rownames(PC_embedding)),
                      "ATAC", "RNA"))
 names(type) <- rownames(PC_embedding)
 table(type)
 batchFactor = type
 
-# batch correct
 sapply(embeddings_names, function(nm) {
   print(nm)
-  # can include optional flags for certain embeddings to 
-  # not be passed through a batch correction stage
-  # e.g. from MultiMAP
   if (nm %in% no_batch) {
-    # i.e. do nothing
     assign(paste0(nm, "_corrected"), get(nm), envir = .GlobalEnv)
   } else {
     assign(paste0(nm, "_corrected"), reducedMNN_batchFactor(get(nm), batchFactor),
            envir = .GlobalEnv)
   }
 }, simplify = FALSE)
+```
 
+Plotting functions
 
-
-# plot
-pl = function(embedding_UMAP, name, coltype = "type") {
+```{r}
+pl = function(embedding_UMAP, name, coltype = "type", xlab = "UMAP1", ylab = "UMAP2", title = TRUE, facet = FALSE, fixed = TRUE) {
   ind = sample(rownames(embedding_UMAP))
   df = data.frame(cell = ind,
-                  U1 = embedding_UMAP[ind,1],
-                  U2 = embedding_UMAP[ind,2],
+                  UMAP1 = embedding_UMAP[ind,1],
+                  UMAP2 = embedding_UMAP[ind,2],
                   type = factor(type[ind]),
                   ctype = ct_all[ind])
   df$col = df[,coltype]
-  p = ggplot(df, aes(x = U1, y = U2, colour = col)) + 
-    geom_point(size = 0.5, alpha = 0.5) +
+  p = ggplot(df, aes(x = UMAP1, y = UMAP2, colour = col)) + 
+    geom_scattermore(pointsize = 1.3, alpha = 0.5) +
     theme_classic() + 
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
     theme(legend.position = "none") +
-    coord_fixed() +
-    ggtitle(name)
+    xlab(xlab) +
+    ylab(ylab) +
+    NULL
+  
+  if (fixed) {
+    p <- p + coord_fixed()
+  }
+  
+  if (title) {
+    p <- p +  ggtitle(name)
+
+  }
   
   if (coltype == "ctype") {
-    p <- p + scale_colour_manual(values = celltype_colours)
+    p <- p + scale_colour_manual(values = colors)
   }
+  
+  if (coltype == "type") {
+    p <- p + scale_colour_manual(values = modality_colours)
+  }
+  
+   if (facet) {
+          p <- p + facet_wrap(~type, nrow = 2)  +
+            NULL
+        }
   
   return(p)
 }
 
+# calculate UMAPs
 embeddings_corrected_UMAP = sapply(embeddings_names, function(nm){
-  if (nm == "MultiMAP_embedding") return(get(nm)) # i.e. do nothing
+  if (nm %in% no_umap) return(get(nm)) # i.e. do nothing
   calculateUMAP_rnames(get(paste0(nm, "_corrected")))
 }, simplify = FALSE)
 
 p_corrected = 
   wrap_plots(
     c(
-      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
-      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), 
+             ylab = c("UMAP2", rep("", length(embeddings_corrected_UMAP)-1)),
+             MoreArgs = list(xlab = ""), SIMPLIFY = FALSE),
+      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), 
+             ylab = c("UMAP2", rep("", length(embeddings_corrected_UMAP)-1)),
+             MoreArgs = list(coltype = "ctype", title = FALSE), SIMPLIFY = FALSE)
+    )) +
+  plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
+p_corrected
+ggsave(p_corrected, file = "../../Figures/raw/PBMC_multiome_UMAPs.pdf",
+       height = 4, width = 8)
+
+g = pl(embeddings_corrected_UMAP[[1]], "") + 
+  theme(legend.position = "bottom") +
+  guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) + 
+  labs(colour = "")
+  
+g_leg = as_ggplot(get_legend(g))
+g_leg
+ggsave(g_leg, file = "../../Figures/raw/PBMC_multiome_UMAPs_modalitylegend.pdf",
+       height = 2, width = 2)
+
+g = pl(embeddings_corrected_UMAP[[1]], "", coltype = "ctype") + 
+  theme(legend.position = "right") +
+  guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) + 
+  labs(colour = "")
+  
+g_leg = as_ggplot(get_legend(g))
+g_leg
+ggsave(g_leg, file = "../../Figures/raw/PBMC_multiome_UMAPs_celltypelegend.pdf",
+       height = 6, width = 2)
+
+# also split cell type coloured plot by type
+p_corrected = 
+  wrap_plots(
+    c(
+      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), 
+             ylab = c("UMAP2", rep("", length(embeddings_corrected_UMAP)-1)),
+             MoreArgs = list(coltype = "ctype", title = TRUE, facet = TRUE, 
+                             fixed = FALSE), SIMPLIFY = FALSE)
     )) +
   plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
 p_corrected
 
+ggsave(p_corrected, file = "../../Figures/raw/PBMC_multiome_UMAPs_split.pdf",
+       height = 4, width = 8)
 ```
 
-Predict cell type labels
+Predict cell type labels of the ATAC-derived cells.
 
 ```{r}
-
-# predict cell type labels using knn with k = 5
 # treat RNA as the reference
 referenceLabels = colData(sce.rna)[,grouping]
 names(referenceLabels) = colnames(sce.rna)
@@ -353,87 +413,122 @@ embeddings_accuracy = sapply(embeddings_names, function(nm) {
   return(list(acc = acc, acc_bal = acc_bal))
 }, simplify = FALSE)
 
-
 res = data.frame(
   type = names(embeddings_names),
   Accuracy = unlist(lapply(embeddings_accuracy, "[[", "acc")),
   Accuracy_balanced = unlist(lapply(embeddings_accuracy, "[[", "acc_bal"))
 )
-res <- res[order(res$Accuracy_balanced, decreasing = TRUE),]
+res <- res[order(res$Accuracy, decreasing = TRUE),]
 res$type <- factor(res$type, levels = res$type)
 
 typesToKeep = c("MultiMAP",
                 "PCA",
                 "StabMap",
-                "StabMap_LD",
                 "UINMF")
 
 g1 = ggplot(subset(res, type %in% typesToKeep), aes(x = type, y = Accuracy_balanced)) + 
   theme_classic() +
   stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
-  # stat_summary(aes(group = type, colour = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
   labs(fill = "") +
   theme_classic() +
   NULL
-# g1
-# print(g1)
+g1
 g2 = ggplot(subset(res, type %in% typesToKeep), aes(x = type, y = Accuracy)) + 
   theme_classic() +
   stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
-  # stat_summary(aes(group = type, colour = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
   labs(fill = "") +
   xlab("") +
   theme_classic() +
+  ylab("Cell type accuracy") +
+  scale_fill_manual(values = method_colours) +
+  theme(legend.position = "none") +
   NULL
 g2
-
-g1 + g2
-
+ggsave(g2, file = "../../Figures/raw/PBMC_multiome_accuracy.pdf",
+       height = 4, width = 4)
 ```
 
-Jaccard neighbourhood, large jaccard is better
+Calculate Jaccard indices of local neighbourhoods of each cell and modality.
+Also compare with performing PCA separately per modality.
 
 ```{r}
-k1 = 50
-# k1 = 200
-k2 = k1
+embList = list()
 
-embeddings_jaccard = sapply(embeddings_names, function(nm) {
+for (k1 in c(30, 50, 100, 200)) {
+  k2 = k1
   
-  print(nm)
+  print(k1)
   
-  embedding = get(paste0(nm, "_corrected"))
-  # split into two matching matrices
-  is_RNA = !grepl("atac", rownames(embedding))
-  embedding_RNA = embedding[is_RNA,]
-  embedding_ATAC = embedding[!is_RNA,]
-  rownames(embedding_ATAC) <- gsub("_atac", "", rownames(embedding_ATAC))
-  cells = intersect(rownames(embedding_RNA), rownames(embedding_ATAC))
-  embedding_RNA_common = embedding_RNA[cells,]
-  embedding_ATAC_common = embedding_ATAC[cells,]
+  embeddings_jaccard = sapply(embeddings_names, function(nm) {
+    
+    print(nm)
+    
+    embedding = get(paste0(nm, "_corrected"))
+    # split into two matching matrices
+    is_RNA = !grepl("atac", rownames(embedding))
+    embedding_RNA = embedding[is_RNA,]
+    embedding_ATAC = embedding[!is_RNA,]
+    rownames(embedding_ATAC) <- gsub("_atac", "", rownames(embedding_ATAC))
+    cells = intersect(rownames(embedding_RNA), rownames(embedding_ATAC))
+    embedding_RNA_common = embedding_RNA[cells,]
+    embedding_ATAC_common = embedding_ATAC[cells,]
+    
+    embedding_jaccard = embeddingJaccard(embedding_RNA_common, embedding_ATAC_common,
+                                         k1 = k1, k2 = k2)
+    return(embedding_jaccard)
+  }, simplify = FALSE)
   
-  embedding_jaccard = embeddingJaccard(embedding_RNA_common, embedding_ATAC_common,
-                                       k1 = k1, k2 = k2)
-  return(embedding_jaccard)
-}, simplify = FALSE)
-# names(embeddings_jaccard) <-  gsub(".+/|_embedding.Rds","",names(embeddings_jaccard))
+  # also want to compare against PC separate, using all data available
+  pc_atac = calculatePCA(sce.atac)
+  pc_rna = calculatePCA(sce.rna)
+  rownames(pc_atac) <- gsub("_atac", "", rownames(pc_atac))
+  cells = intersect(rownames(pc_atac), rownames(pc_rna))
+  pc_rna_common = pc_rna[cells,]
+  pc_atac_common = pc_atac[cells,]
+  
+  embeddings_jaccard[["PC_separate"]] <- embeddingJaccard(
+    pc_rna_common, pc_atac_common,
+    k1 = k1, k2 = k2)
+  
+  embList[[as.character(k1)]] <- embeddings_jaccard
+}
 
-# also want to compare against PC separate, using all data available
-pc_atac = calculatePCA(sce.atac)
-pc_rna = calculatePCA(sce.rna)
-rownames(pc_atac) <- gsub("_atac", "", rownames(pc_atac))
-cells = intersect(rownames(pc_atac), rownames(pc_rna))
-pc_rna_common = pc_rna[cells,]
-pc_atac_common = pc_atac[cells,]
+df_jaccard_all = NULL
 
-embeddings_jaccard[["PC_separate"]] <- embeddingJaccard(
-  pc_rna_common, pc_atac_common,
-  k1 = k1, k2 = k2)
+for (i in names(embList)) {
+  
+  embeddings_jaccard <- embList[[i]]  
+  
+  df_jaccard = data.frame(type = rep(names(embeddings_jaccard), times = unlist(lapply(embeddings_jaccard, length))),
+                          jaccard = unlist(embeddings_jaccard),
+                          k = i
+  )
+  
+  df_jaccard_all <- rbind(df_jaccard_all, df_jaccard)
+  
+}
 
-emb = sort(unlist(lapply(embeddings_jaccard, median)))
+embeddings_jaccard <- embList[["50"]]
+
+emb = sort(unlist(lapply(embeddings_jaccard, mean)))
 emb
-boxplot(embeddings_jaccard[names(emb)], ylab = "Jaccard similarity", main = k1)
-# }
+
+df_jaccard_all$k <- factor(df_jaccard_all$k, levels = gtools::mixedsort(unique(as.character(df_jaccard_all$k))))
+
+df_jaccard_all$type <- factor(df_jaccard_all$type, levels = names(emb))
+
+g = ggplot(df_jaccard_all, aes(x = k, y = jaccard, fill = type)) + 
+  theme_classic() +
+  geom_violin(draw_quantiles = c(0.5), adjust = 1.5, scale = "width") +
+  labs(fill = "") +
+  scale_fill_manual(values = method_colours) +
+  ylab("Jaccard similarity") +
+  theme(legend.position = "none") +
+  xlab("") +
+  NULL
+print(g)
+ggsave(g, file = "../../Figures/raw/PBMC_multiome_jaccard_all.pdf",
+       height = 4, width = 6)
 
 df_jaccard = data.frame(type = rep(names(embeddings_jaccard), times = unlist(lapply(embeddings_jaccard, length))),
                         jaccard = unlist(embeddings_jaccard)
@@ -442,21 +537,24 @@ df_jaccard$type <- factor(df_jaccard$type, levels = names(emb))
 
 g = ggplot(subset(df_jaccard, type %in% c(typesToKeep, "PC_separate")), aes(x = type, y = jaccard, fill = type)) + 
   theme_classic() +
-  geom_boxplot() +
+  geom_violin(draw_quantiles = c(0.5), adjust = 1.5, scale = "width") +
   labs(fill = "") +
-  ylab("Jaccard similarity between RNA and ATAC modalities") +
+  scale_fill_manual(values = method_colours) +
+  ylab("Jaccard similarity among 50 neighbours") +
+  theme(legend.position = "none") +
   xlab("") +
   NULL
 print(g)
-
+ggsave(g, file = "../../Figures/raw/PBMC_multiome_jaccard.pdf",
+       height = 4, width = 6)
 ```
 
-Closest neighbour, how many other cells until you reach the corresponding cell
+Calculate closest neighbour metric, i.e. how many other cells are between a 
+cell and its matching cell with the other modality? Censor values at 501, i.e.
+do not specifically calculate how many closest for any above that level.
 
 ```{r}
-
-# nei_pos_list = list()
-k_max = 1000
+k_max = 501
 
 nei_pos_list = sapply(embeddings_names, function(nm) {
   
@@ -464,15 +562,13 @@ nei_pos_list = sapply(embeddings_names, function(nm) {
   
   embedding = get(paste0(nm, "_corrected"))
   
-  # embedding = embeddings_corrected[[i]]
-  
-  nei_atac = queryNamedKNN(embedding[!grepl("_atac", rownames(embedding)),],
+  nei_atac = queryNamedKNN(embedding,
                            embedding[grepl("_atac", rownames(embedding)),],
                            k = k_max)
   nei_atac_bin = apply(nei_atac, 2, function(x) isEqual(gsub("_atac", "", rownames(nei_atac)), x))
   nei_atac_pos = max.col(nei_atac_bin, ties.method = "last")
   mean(nei_atac_pos)
-  nei_rna = queryNamedKNN(embedding[grepl("_atac", rownames(embedding)),],
+  nei_rna = queryNamedKNN(embedding,
                           embedding[!grepl("_atac", rownames(embedding)),],
                           k = k_max)
   nei_rna_bin = apply(nei_rna, 2, function(x) isEqual(paste0(rownames(nei_rna), "_atac"), x))
@@ -482,40 +578,56 @@ nei_pos_list = sapply(embeddings_names, function(nm) {
   nei_pos = c(nei_atac_pos, nei_rna_pos)
   names(nei_pos) <- c(rownames(nei_atac), rownames(nei_rna))
   
-  # nei_pos_list[[i]] <- nei_pos
   return(nei_pos)
   
 }, simplify = FALSE)
 
-# names(nei_pos_list) <- names(embeddings_corrected)
-# here a smaller number of nei is better
-sort(unlist(lapply(nei_pos_list, function(x) sum(x < 10))))
-sort(unlist(lapply(nei_pos_list, mean)))
-boxplot(nei_pos_list, las = 2)
-
-
-xvals = c(5,10,20,30,50,100,200,500,1000)
+xvals = c(5,10,20,30,50,100,200,500)
 nei_x = sapply(xvals,
-               function(y) unlist(lapply(nei_pos_list, function(x) sum(x < y))))
+               function(y) unlist(lapply(nei_pos_list, function(x) sum(x <= y))))
 colnames(nei_x) <- xvals
 
 nei_df = reshape::melt(nei_x)
 nei_df$X1 <- factor(rownames(nei_x), levels = names(sort(nei_x[,1], decreasing = TRUE)))
 
-ggplot(nei_df, aes(x = X2, y = value, group = X1)) + 
+g = ggplot(nei_df, aes(x = X2, y = value, group = X1)) + 
   theme_classic() +
-  geom_line(aes(colour = X1, linetype = X1), size = 1) + 
+  geom_line(aes(colour = X1), size = 1, alpha = 0.7) + 
   scale_y_log10() +
   scale_x_log10() +
   labs(colour = "", linetype = "") +
+  scale_colour_manual(values = method_colours) +
   xlab("X") +
-  ylab("Number of cells with at most X cells closer to matching cell") +
+  ylab("Number of cells with at most X other\ncells nearer to matched cell") +
+  theme(legend.position = "bottom") +
   NULL
+g
 
+ggsave(g, file = "../../Figures/raw/PBMC_multiome_matchingcell.pdf",
+       height = 4, width = 4.5)
 
+g = ggplot(nei_df, aes(x = factor(X2), y = value, group = X1)) + 
+  theme_classic() +
+  geom_col(aes(fill = X1, group = X1), size = 1, alpha = 0.7, position = "dodge") + 
+  scale_y_log10() +
+  geom_line(aes(colour = X1), size = 1, alpha = 0.7) + 
+  labs(colour = "", linetype = "", fill = "") +
+  scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
+  xlab("X") +
+  ylab("Number of cells with at most X other\ncells nearer to matched cell") +
+  theme(legend.position = "bottom") +
+  NULL
+g
+ggsave(g + theme(legend.position = "none"), file = "../../Figures/raw/PBMC_multiome_matchingcell_bars.pdf",
+       height = 4, width = 4.5)
+
+g_leg = as_ggplot(get_legend(g))
+g_leg
+ggsave(g_leg, file = "../../Figures/raw/PBMC_multiome_matchingcell_bars_legend.pdf",
+       height = 2, width = 6)
 ```
 
-Split UMAP plot
+Aside: Split UMAP plot
 
 ```{r}
 
@@ -534,15 +646,8 @@ splitMultiomeUMAP = function(UMAP){
 
 ```
 
-
-Experimental:
-
-```{r, eval = FALSE}
-
-# experimental, generate a side-by-side to find the corresponding
-# cells in the UMAP
+```{r}
 library(ggiraph)
-
 i = "StabMap"
 
 df = as.data.frame(splitMultiomeUMAP(embeddings_corrected_UMAP[[i]]))
@@ -580,20 +685,18 @@ gg2 <- ggplot(df) +
 
 g0 + gg1 + gg2
 
-girafe(ggobj = plot_grid(gg0, gg1, gg2), width_svg = 8, height_svg = 4,
-       options = list(
-         opts_selection(type = "multiple",
-                        css = "fill:#FF3333;stroke:black;",
-                        only_shiny = FALSE)
-       ))
-
-
+if (FALSE) { # can only be run interactively
+  girafe(ggobj = plot_grid(gg0, gg1, gg2), width_svg = 8, height_svg = 4,
+         options = list(
+           opts_selection(type = "multiple",
+                          css = "fill:#FF3333;stroke:black;",
+                          only_shiny = FALSE)
+         ))
+}
 ```
 
-
-Finish
+# Finish
 
 ```{r}
 sessionInfo()
 ```
-

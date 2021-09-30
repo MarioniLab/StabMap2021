@@ -29,6 +29,9 @@ Load scripts and packages.
 library(SingleCellMultiModal)
 library(MultiAssayExperiment)
 library(UpSetR)
+library(nord) # for colours
+library(ggpubr) # for extracting legends
+library(lisi) # installed via devtools::install_github("immunogenomics/LISI")
 source("../scripts/initialise.R")
 ```
 
@@ -109,9 +112,18 @@ and ATAC modalities to be able to run.
 Assess the quality of the mapping visually.
 
 ```{r}
-gList = list()
+modality_colours = nord(palette = "aurora")[c(1,3,5)]
+names(modality_colours) = c("RNA", "Multiome", "ATAC")
 
-for (probval in c(1)) {
+# celltype_colours = nord(palette = "algoma_forest")[seq_len(length(unique(sce.rna$celltype)))]
+```
+
+
+```{r}
+gList = list()
+lisi_values_list = list()
+
+for (probval in c(10:1)) {
   
   print(probval)
   
@@ -168,13 +180,98 @@ for (probval in c(1)) {
                             UMAP2_corrected = out_joint_UMAP_corrected[names(modality),2])
   out_joint_df <- out_joint_df[sample(rownames(out_joint_df)),]
   
+  # export some plots:
+  g1 = ggplot(out_joint_df, aes(x = modality)) + 
+    geom_bar(fill = "gray") +
+    ylab("Number of cells") +
+    theme_classic() +
+    xlab("Simulated modality") +
+    theme(legend.position = "none") +
+    NULL
+  g1
+  ggsave(g1, file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                           "_numCells.pdf"),
+         width = 3, height = 3)
+  
+  g2 = plotFeatureOverlaps(assay_list)
+  pdf(paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+             "_upset.pdf"), 
+      width = 4, height = 3)
+  print(g2)
+  dev.off()
+  
+  graph = featureNetwork(assay_list)
+  V(graph)$size = 50
+  V(graph)$color = "lightblue"
+  V(graph)$label.color = "black"
+  
+  pdf(paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+             "_network.pdf"), 
+      width = 6, height = 6)
+  plot(graph, layout = layout.drl)
+  dev.off()
+  
+  g3 = ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
+    geom_point(aes(colour = modality), size = 0.2) +
+    scale_colour_manual(values = modality_colours) +
+    theme_classic() + 
+    theme(legend.position = "bottom") +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5))) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("UMAP2") +
+    labs(colour = "") +
+    NULL
+  ggsave(g3 + theme(legend.position = "none"), file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+             "_UMAP_modality.pdf"),
+         height = 3, width = 3)
+  
+    g6 = as_ggplot(get_legend(g3))
+  g6
+  ggsave(g6, 
+         file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                       "_UMAP_modality_legend.pdf"),
+         height = 1, width = 3)
+  
+  
+  g4 = ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
+    geom_point(aes(colour = celltype), size = 0.2) +
+    scale_colour_nord(palette = "lumina") +
+    theme_classic() + 
+    theme(legend.position = "right",) +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5),
+                                 ncol = 1)) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("UMAP2") +
+    labs(colour = "") +
+    NULL
+  g4
+  ggsave(g4 + theme(legend.position = "none"), 
+         file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                       "_UMAP_celltype.pdf"),
+         height = 3, width = 3)
+  
+  g5 = as_ggplot(get_legend(g4))
+  g5
+  ggsave(g5, 
+         file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                       "_UMAP_celltype_legend.pdf"),
+         height = 5, width = 4)
+  
+  
+  
   g = ggplot(out_joint_df, aes(x = modality)) + 
     geom_bar(aes(fill = modality)) +
     ylab("Number of cells") +
     theme_classic() +
     ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
     geom_point(aes(colour = modality)) +
-    theme_classic() +
+    theme_classic() + 
     ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
     geom_point(aes(colour = celltype)) +
     theme_classic() +
@@ -191,14 +288,60 @@ for (probval in c(1)) {
   gList[[probval]] <- g
   
   print(g)
+  
+  lisi_values = compute_lisi(out_joint_corrected,
+                             out_joint_df[rownames(out_joint_corrected),],
+                             c("modality", "celltype"))
+  lisi_values$probval <- probval
+  lisi_values$numMultiome <- sum(modality == "Multiome")
+  
+  lisi_values_list[[probval]] <- lisi_values
 }
 ```
+
+Make some plots - use local inverse simpson index to identify at which point
+there are too few multiome cells to adequately map data across.
+
+It looks like at around 4-5 ratio (5 = around 950 cells) there is decline in 
+the quality of the mapping, suggesting you probably need around 1000 high
+quality multiome cells to be able to trust the mapping between the datasets.
+
+```{r}
+lisi_values_all = do.call(rbind, lisi_values_list)
+lisi_values_all$probval <- factor(lisi_values_all$probval)
+lisi_values_all$numMultiome <- factor(lisi_values_all$numMultiome)
+
+g1 = ggplot(lisi_values_all, aes(x = numMultiome, y = modality, group = numMultiome)) +
+  theme_classic() +
+  xlab("") +
+  theme(axis.text.x = element_blank()) +
+  ylab("Modality LISI") +
+  geom_boxplot(outlier.size = 0.1, fill = "gray75") + 
+  geom_vline(xintercept = 6.5, linetype = "dotted") +
+  NULL
+# g1
+
+g2 = ggplot(lisi_values_all, aes(x = numMultiome, y = celltype, group = numMultiome)) +
+  theme_classic() +
+  ylab("Cell type LISI") +
+  xlab("Number of cells in Multiome dataset") +
+  geom_boxplot(outlier.size = 0.1, fill = "gray75") + 
+  geom_vline(xintercept = 6.5, linetype = "dotted") +
+  NULL
+
+g = g1 + g2 + plot_layout(nrow = 2)
+g
+
+ggsave(g, file = "../../Figures/raw/PBMC_nonoverlapping_multiome_LISI.pdf",
+       height = 3.5, width = 8)
+```
+
 
 # Try with MOFA2
 
 the last value of the loop above is the equal thirds split
 
-```{r}
+```{r, eval = FALSE}
 library(data.table)
 library(MOFA2)
 

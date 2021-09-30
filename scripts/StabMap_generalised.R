@@ -25,11 +25,41 @@ if (FALSE) {
 }
 ############################
 
+reWeightEmbedding = function(embedding, weights = NULL, factor = 1e6) {
+  
+  # embedding is a cells x dimensions matrix
+  # weights is an optional named list (names correspond to all before the underscore)
+  # for weighting each embedding component
+  # factor is a multiplicative value to avoid tiny numbers
+  cols = gsub("_.+", "", colnames(embedding))
+  
+  cols_split = split(colnames(embedding), cols)
+  
+  if (is.null(weights)) {
+    weights = lapply(cols_split, function(x) 1)
+  }
+  
+  norms = lapply(cols_split, function(cols) {
+    sum(colSums((embedding[,cols]^2)))
+  })
+  
+  norms_long = unsplit(norms, cols)
+  weights_long = factor*unlist(weights)[cols]
+  
+  embedding_norm = t( (t(embedding) / norms_long) * weights_long)
+  if (FALSE) {
+    barplot(colSums(embedding_norm^2))
+  }
+  return(embedding_norm)
+}
+
+
 # feature overlaps between datasets
 plotFeatureOverlaps = function(assay_list) {
   require(UpSetR)
   g = upset(as.data.frame(1*do.call(cbind, lapply(assay_list, function(x) Reduce(union, lapply(assay_list, rownames)) %in% rownames(x)))))
   print(g)
+  return(g)
 }
 
 # generate a network of the datasets
@@ -500,7 +530,11 @@ stabMapGeneralised = function(assay_list,
     
   }
   
-  all_embeddings = do.call(cbind, all_embeddings_list)
+  # experimental: make sure the rownames are matching when cbinding
+  all_cells = rownames(all_embeddings_list[[1]])
+  
+  # all_embeddings = do.call(cbind, all_embeddings_list)
+  all_embeddings = do.call(cbind, lapply(all_embeddings_list, "[", all_cells, ))
   
   return(all_embeddings)
 }

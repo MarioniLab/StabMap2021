@@ -1,8 +1,64 @@
 # functions for calculating uncdertainty under feature subsetting
 # using distributional changes of jaccard distances among
 # neighbours
-# last updated 6 May 2021
-# Shila Ghazanfar
+
+embeddingUncertainty = function(embedding_reference,
+                                embedding_joint,
+                                k = 50) {
+  
+  require(igraph)
+  require(bluster)
+  
+  # k = 50
+  graph = makeKNNGraph(embedding_reference, k = k)
+  V(graph)$name <- rownames(embedding_reference)
+  message("made KNN graph using reference embedding")
+  
+  graph_sim = igraph::similarity(graph, method = "jaccard")
+  rownames(graph_sim) <- V(graph)$name
+  colnames(graph_sim) <- V(graph)$name
+  
+  full_sim = graph_sim
+  message("extracted similarities using reference embedding")
+  
+  # identify nearest neighbours
+  tmp_r = embedding_joint[rownames(embedding_reference),]
+  
+  
+  graph = makeKNNGraph(tmp_r, k = k)
+  V(graph)$name <- rownames(tmp_r)
+  message("made KNN graph using joint embedding")
+  
+  graph_sim = igraph::similarity(graph, method = "jaccard")
+  rownames(graph_sim) <- V(graph)$name
+  colnames(graph_sim) <- V(graph)$name
+  
+  subset_sim = graph_sim
+  message("extracted similarities using joint embedding")
+  
+  
+  ref_knn_name = queryNamedKNN(tmp_r,
+                               embedding_joint,
+                               k = k)
+  # ref_knn_name = apply(ref_knn, 2, function(x) rownames(tmp_r)[x])
+  # rownames(ref_knn_name) <- rownames(jointPCs)
+  message("identified nearest neighbours between reference and joint embeddings")
+  
+  # extract cell-specific uncertainty score
+  uncertainty_scores = sapply(rownames(ref_knn_name), function(i) {
+    # if (verbose) print(i)
+    ref_sim_nn = full_sim[ref_knn_name[i,], ref_knn_name[i,]]
+    ref_sim_sub_nn = subset_sim[ref_knn_name[i,], ref_knn_name[i,]]
+    
+    stat = suppressWarnings({ks.test(c(ref_sim_nn[lower.tri(ref_sim_nn)]),
+                                     c(ref_sim_sub_nn[lower.tri(ref_sim_sub_nn)]))$stat})
+    names(stat) <- NULL
+    return(stat)
+  })
+  message("extracted uncertainty scores for all cells in joint embedding")
+  
+  return(uncertainty_scores)
+}
 
 generateSimilarity = function(SCE, k = 50, batchFactor = NULL, HVGs = NULL) {
   # SCE is a single cell experiment object containing the gene expression
