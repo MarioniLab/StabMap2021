@@ -5,10 +5,17 @@ library(ggplot2)
 library(patchwork)
 library(batchelor)
 library(matrixStats)
+
+library(StabMap)
+
 source("../scripts/adaptiveKNN.R")
-source("../scripts/StabMap_functions.R")
-source("../scripts/StabMap_generalised_experimental.R")
+source("../scripts/batch_wrap_functions.R")
+source("../scripts/convenience_functions.R")
+# source("../scripts/StabMap_functions.R")
+# source("../scripts/StabMap_generalised_experimental.R")
+source("../scripts/comparison_functions.R")
 source("../scripts/subsetUncertainty.R")
+source("../scripts/tfidf.R")
 
 # give each method it's own colour
 library(nord)
