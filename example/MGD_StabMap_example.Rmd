@@ -1,0 +1,665 @@
+---
+title: "StabMap simulation: Mouse Gastrulation Data"
+author: "Shila Ghazanfar"
+date: "25/08/2021"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(MouseGastrulationData)
+# library(scater)
+# library(ggplot2)
+# library(patchwork)
+# library(batchelor)
+# library(matrixStats)
+# source("../scripts/adaptiveKNN.R")
+# source("../scripts/StabMap_functions.R")
+# source("../scripts/StabMap_generalised_experimental.R")
+source("../scripts/initialise.R")
+```
+
+Load data via the MouseGastrulationData Bioconductor package
+
+```{r}
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt[mt[, "stage"] == "E8.5", "sample"]
+
+atlas = EmbryoAtlasData(type = "processed", samples = samples)
+atlas <- logNormCounts(atlas)
+
+if (TRUE) {
+decomp <- modelGeneVar(atlas)
+# hvgs <- rownames(decomp)[decomp$p.value <= 0.05 & !is.na(decomp$p.value)]
+hvgs <- rownames(decomp)[decomp$mean > 0.05 & decomp$total > 0]
+length(hvgs)
+atlas <- atlas[hvgs,]
+}
+
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+
+ct_all = atlas$celltype
+names(ct_all) <- colnames(atlas)
+
+# the sample information is used in the simulation below
+table(atlas$sample)
+```
+
+Build simulation set up. Treat three samples as the reference data, and 
+treat the fourth sample as a query dataset with fewer features - selected
+randomly among the entire set of features. Perform StabMap embedding, both
+ignoring and using cell type labels, and compare against PCA, UINMF, and
+MultiMAP.
+
+Assess performance by predicting cell types of the query dataset, using the 
+reference dataset cells as the training set, and reporting the classification 
+accuracy of the query dataset.
+
+Option to plot the UMAPs for each simulation, currently set to not run.
+
+```{r}
+# nGenes_all = rep(c(100, 150, 200, 250, 500, 1000, 2500, 5000, 10000),
+                 # times = c(10:2))
+# nGenes_all = rep(c(100, 200, 500, 1000, nrow(atlas)),
+#                  times = c(3, 3, 2, 2, 1))
+nGenes_all = c(100, 200, 500, 1000, nrow(atlas),
+               100, 200, 500, 1000,
+               100, 200)
+               
+names(nGenes_all) <- paste0("Sim_", seq_len(length(nGenes_all)))
+
+labels = "celltype"
+assayNameReference = "logcounts"
+assayNameQuery = "logcounts"
+
+resFile = "../../output/MGD_StabMap_example/MGD_StabMap_example_res.Rds"
+simGenesFile = "../../output/MGD_StabMap_example/MGD_StabMap_example_simGenes.Rds"
+
+if (!file.exists(resFile)) {
+  res = NULL
+} else {
+  res = readRDS(resFile)
+}
+
+if (!file.exists(simGenesFile)) {
+  simGenes = list()
+} else {
+  simGenes = readRDS(simGenesFile)
+}
+
+for (sim in names(nGenes_all)) {
+  # sim = names(nGenes_all)[1]
+  
+  # if (sim == "Sim0") {
+  #   # run just once:
+  #   genes = readRDS("seqFISH_ENSEMBL.Rds")
+  #   simGenes[[sim]] <- genes
+  # }
+  
+  nGenes = nGenes_all[sim]
+  if (is.null(simGenes[[sim]])) {
+    genes = sample(rownames(atlas)[rowVars(assay(atlas, assayNameReference)) > 0])[seq_len(nGenes)]
+    simGenes[[sim]] <- genes
+  } else {
+    genes <- simGenes[[sim]]
+  }
+  
+  for (querySample in samples) {
+  # querySample = samples[1]
+    # referenceSample = setdiff(samples,querySample)[1]
+    referenceSample = setdiff(samples,querySample)
+    
+    # for a quick loop:
+    # if (querySample != samples[1]) next
+      
+    print(nGenes)
+    print(querySample)
+    
+    # has this already been done?
+    if (any(res[,"Sim"] == sim & res[,"querySample"] == querySample)) next
+    
+    doUMAP = TRUE
+    
+    # build reference and query data using querySample and genes
+    # referenceSCE = atlas[,atlas$sample != querySample]
+    referenceSCE = atlas[,atlas$sample %in% referenceSample]
+    
+    querySCE = atlas[genes, atlas$sample %in% querySample]
+    
+    # data type factor
+    type = factor(ifelse(c(colnames(referenceSCE), colnames(querySCE)) %in% colnames(referenceSCE),
+                         "reference", "query"))
+    names(type) <- c(colnames(referenceSCE), colnames(querySCE))
+    
+    # input files as lists
+    SCE_list = list(reference = referenceSCE, query = querySCE)
+    assayNames = list(reference = assayNameReference, query = assayNameQuery)
+    assay_list = mapply(assay, SCE_list, assayNames)
+    counts_list = mapply(assay, SCE_list, "counts")
+    labels_list = list(reference = setNames(referenceSCE$celltype, colnames(referenceSCE)))
+    
+    g = plotFeatureOverlaps(assay_list)
+    print(g)
+    pdf(file = paste0("../../Figures/raw/MGD_", sim, "_", querySample,
+                            "_upset.pdf"), height = 3, width = 5)
+    print(g)
+    dev.off()
+    
+    # nPCs = min(50, ceiling(length(genes)/2))
+    nPCs = 50
+    
+    if (TRUE) {
+    # perform PCA
+    PC_embedding = mapPCA(assay_list,nPCs = nPCs)
+    dim(PC_embedding)
+    }
+    
+    if (TRUE) {
+    # perform UINMF
+    UINMF_embedding = UINMF_wrap(counts_list = counts_list)
+    dim(UINMF_embedding)
+    }
+    
+    # Perform linear discriminant stabMap
+    if (FALSE) {
+    LD_embedding = stabMapLabelled(referenceSCE = referenceSCE,
+                                   query_assay = assay_list[["query"]],
+                                   labels = labels,
+                                   assayNameReference = assayNameReference,
+                                   prop_explained = 1,
+                                   selectBestLDA = FALSE)
+    dim(LD_embedding)
+    }
+    
+     # comparative stabmap generalised
+    SC_gen_embedding = stabMapGeneralised(assay_list,
+                                          reference_list = "reference",
+                                          ncomponentsReference = nPCs,
+                                          ncomponentsSubset = nPCs,
+                                          projectAll = TRUE)
+    dim(SC_gen_embedding)
+    
+    PC_ref =  mapPCA(list(assay_list[["reference"]]), nPCs = nPCs)
+    
+    PC_query = t(imputeEmbedding(assay_list = list(PC_ref = t(PC_ref)),
+                               embedding = SC_gen_embedding,
+                               reference = rownames(PC_ref),
+                               query = colnames(assay_list[["query"]]))[[1]])
+    
+    PC_all = rbind(PC_ref, PC_query)
+    
+    # use the PC ref to calculate uncertainty scores for the stabmapped
+    # cells
+    # source("../scripts/subsetUncertainty.R")
+    # library(bluster)
+    
+   
+    
+    if (FALSE) {
+    uncertainty_scores = embeddingUncertainty(PC_ref, SC_gen_embedding)
+    jaccard_scores = embeddingJaccard(PC_ref, SC_gen_embedding[rownames(PC_ref),])
+    
+    plot(uncertainty_scores[names(jaccard_scores)], jaccard_scores)
+    }
+    
+    
+    
+    # comparative and LD stabmap generalised
+    if (FALSE) {
+      SC_LD_gen_embedding = stabMapGeneralised(assay_list,
+                                               reference_list = "reference",
+                                               labels_list = labels_list,
+                                               # reference_features_list = list("reference" = rownames(querySCE)),
+                                               ncomponentsReference = nPCs,
+                                               ncomponentsSubset = nPCs,
+                                               projectAll = TRUE)
+      
+    dim(SC_LD_gen_embedding)
+    boxplot(SC_LD_gen_embedding, las = 2, outline = FALSE)
+    
+    # LD_gen_embedding <- SC_LD_gen_embedding_sub[, grepl("reference_LD", colnames(SC_LD_gen_embedding_sub))]
+    # 
+    # boxplot(SC_LD_gen_embedding, outline = FALSE)
+    
+    # SC_LD_gen_embedding = cbind(SC_gen_embedding, LD_gen_embedding)
+    
+    boxplot(SC_LD_gen_embedding, outline = FALSE)
+    
+    SC_LD_gen_embedding <- reWeightEmbedding(SC_LD_gen_embedding,
+                                               weights = c(
+                                                 "reference_PC" = 1,
+                                                 "reference_LD" = 1
+                                               ))
+    
+    boxplot(SC_LD_gen_embedding, outline = FALSE)
+    # boxplot(SC_LD_gen_embedding_2, las = 2)
+    
+    PC_labels_query = t(imputeEmbedding(assay_list = list(PC_ref = t(PC_ref)),
+                               embedding = SC_LD_gen_embedding,
+                               reference = rownames(PC_ref),
+                               query = colnames(assay_list[["query"]]))[[1]])
+    
+    PC_labels_all = rbind(PC_ref, PC_labels_query)
+    
+    
+    # barplot(colSums(SC_LD_gen_embedding_2^2))
+    # sum((SC_LD_gen_embedding_2)[,1:20]^2);  sum((SC_LD_gen_embedding_2)[,21:ncol(SC_LD_gen_embedding_2)]^2)
+    }
+    
+    if (FALSE) {
+    # rescaling the norm gives more priority on the LDs
+    barplot(colSums(SC_LD_gen_embedding^2))
+    # re-assign the norm of each part of the embedding
+    norm_PCs = sum(colSums((SC_LD_gen_embedding[,grepl("PC", colnames(SC_LD_gen_embedding))]^2)))
+    norm_LDs = sum(colSums((SC_LD_gen_embedding[,grepl("LD", colnames(SC_LD_gen_embedding))]^2)))
+    SC_LD_gen_embedding_norm = SC_LD_gen_embedding
+    SC_LD_gen_embedding_norm[,grepl("PC", colnames(SC_LD_gen_embedding))] <- 1e6*SC_LD_gen_embedding_norm[,grepl("PC", colnames(SC_LD_gen_embedding))]/norm_PCs
+        SC_LD_gen_embedding_norm[,grepl("LD", colnames(SC_LD_gen_embedding))] <- 1e6*SC_LD_gen_embedding_norm[,grepl("LD", colnames(SC_LD_gen_embedding))]/norm_LDs
+     barplot(colSums(SC_LD_gen_embedding_norm^2))
+    }
+    
+   
+    
+    # comparative stabmap generalised (testing)
+  if (FALSE) {
+      SC_gen_embedding = calculateUMAP_rnames(
+      reducedMNN_batchFactor(
+        stabMapGeneralised(assay_list,
+                           labels_list = labels_list,
+                           reference_list = "reference",
+                           ncomponentsReference = nPCs,
+                           ncomponentsSubset = nPCs,
+                           projectAll = TRUE
+                           ), type))
+    dim(SC_gen_embedding)
+    (pl(SC_gen_embedding, "StabMap") + 
+        pl(SC_gen_embedding, "StabMap", coltype = "ctype")) /
+      (pl(SC_gen_embedding, "StabMap", coltype = "ctype") + facet_wrap(~type))
+  }
+    
+    # and if you norm the columns of the embeddings
+    
+    
+    # boxplot(as.numeric(SC_gen_embedding[names(type),1]) ~ type)
+    
+    if (FALSE) {
+    # comparative stabmap
+    SC_embedding = stabMapComparative(assay_list)
+    dim(SC_embedding)
+    }
+    
+    if (FALSE) {
+    # stabMap treating larger data as only reference
+    SC_ref_embedding = stabMapComparative(assay_list,
+                                          stabilise = c(TRUE, FALSE))
+    dim(SC_ref_embedding)
+    }
+    
+    if (FALSE) {
+    # LDA and comparative stabmap together
+    LD_SC_embedding = cbind(LD_embedding, SC_embedding)
+    }
+    
+    # placeholder for MultiMAP, make sure it's added to the below
+    # embeddings_names object
+    # this needs to be split out by batch as well
+    # since no further correction is performed
+    if (TRUE) {
+    MultiMAP_embedding = MultiMAP_wrap(assay_list, verbose = TRUE)
+    dim(MultiMAP_embedding)
+    }
+    
+    # if (FALSE) {
+    # embeddings_names = c("StabMap" = "SC_embedding",
+    #                      "StabMap_labels" = "LD_SC_embedding",
+    #                      "PCA" = "PC_embedding",
+    #                      "UINMF" = "UINMF_embedding",
+    #                      "MultiMAP" = "MultiMAP_embedding"
+    #                      # "StabMap_ref" = "SC_ref_embedding",
+    #                      # "StabMap_LD_only" = "LD_embedding"
+    #                      )
+    # }
+    # 
+    # embeddings_names = c("PCA" = "PC_embedding",
+    #                      "UINMF" = "UINMF_embedding",
+    #                      "MultiMAP" = "MultiMAP_embedding",
+    #                      "StabMap_labels" = "SC_LD_gen_embedding",
+    #                      "StabMap" = "SC_gen_embedding")
+    
+    embeddings_names = c(
+      "PCA" = "PC_embedding",
+      "UINMF" = "UINMF_embedding",
+      "MultiMAP" = "MultiMAP_embedding",
+      "StabMap_unprojected" = "SC_gen_embedding",
+      # "StabMap_labels" = "SC_LD_gen_embedding",
+      # "StabMap_labels_projected" = "PC_labels_all",
+      "StabMap" = "PC_all"
+      # "StabMap_labels_only" = "LD_gen_embedding"
+    )
+    
+    nobatch = c("MultiMAP_embedding", "UINMF_embedding")
+    noumap = c("MultiMAP_embedding")
+    
+      pl = function(embedding_UMAP, name, coltype = "type", facet = FALSE) {
+        ind = sample(rownames(embedding_UMAP))
+        df = data.frame(cell = ind,
+                        U1 = embedding_UMAP[ind,1],
+                        U2 = embedding_UMAP[ind,2],
+                        type = factor(type[ind]),
+                        ctype = ct_all[ind])
+        df$col = df[,coltype]
+        p = ggplot(df, aes(x = U1, y = U2, colour = col)) + 
+          geom_point(size = 0.3) +
+          theme_classic() + 
+          theme(legend.position = "none") +
+          # coord_fixed() +
+          theme(axis.text = element_blank()) +
+          theme(axis.ticks = element_blank()) +
+          xlab("") +
+          ylab("") +
+          ggtitle(name)
+        
+        if (facet) {
+          p <- p + facet_wrap(~type, nrow = 2)  +
+            NULL
+        }
+        
+        if (coltype == "ctype") {
+          p <- p + scale_colour_manual(values = celltype_colours)
+        }
+    
+            if (coltype == "type") {
+          p <- p + scale_colour_manual(values = c("query" = "red", "reference" = "black"))
+        }
+    
+            
+        return(p)
+      }
+    
+    if (FALSE) {
+      
+      embeddings_UMAP = sapply(embeddings_names, function(nm){
+        if (nm %in% noumap) return(get(nm)) # i.e. do nothing
+        calculateUMAP_rnames(get(nm))
+      }, simplify = FALSE)
+      
+    
+      
+      p_uncorrected = 
+        wrap_plots(
+          c(
+            mapply(pl, embeddings_UMAP, names(embeddings_UMAP), SIMPLIFY = FALSE),
+            mapply(pl, embeddings_UMAP, names(embeddings_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+          )) +
+        plot_layout(nrow = 2, ncol = length(embeddings_UMAP), byrow = TRUE)
+      p_uncorrected
+      
+    }
+    
+    cnames = unlist(lapply(assay_list, colnames))
+    batchFactor_ref <- ifelse(cnames %in% colnames(referenceSCE),"Reference", "Query")
+    batchFactor = as.character(interaction(batchFactor_ref, colData(atlas)[cnames, "sample"]))
+    names(batchFactor) <- cnames
+    
+    sapply(embeddings_names, function(nm) {
+      print(nm)
+      # can include optional flags for certain embeddings to 
+      # not be passed through a batch correction stage
+      # e.g. from MultiMAP
+      if (nm %in% nobatch) {
+        # i.e. do nothing
+        print(paste0("no batch correction for ", nm))
+        assign(paste0(nm, "_corrected"), get(nm), envir = .GlobalEnv)
+      } else {
+        
+        assign(paste0(nm, "_corrected"), reducedMNN_batchFactor(get(nm), batchFactor),
+        envir = .GlobalEnv)
+               #  assign(paste0(nm, "_corrected"), get(nm),
+               # envir = .GlobalEnv)
+      }
+    }, simplify = FALSE)
+    
+    # if (doUMAP) {
+      if (TRUE) {
+    
+      embeddings_corrected_UMAP = sapply(embeddings_names, function(nm) {
+        if (nm %in% noumap) return(get(nm)) # i.e. do nothing
+        calculateUMAP_rnames(get(paste0(nm, "_corrected")))
+      }, simplify = FALSE)
+      
+      p_corrected = 
+        wrap_plots(
+          c(
+            mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
+            mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+          )) +
+        plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
+      print(p_corrected)
+      
+      gList = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype", facet = TRUE), SIMPLIFY = FALSE)
+      
+      g = wrap_plots(gList) + plot_layout(nrow = 1)
+    print(g)
+    
+      g = wrap_plots(gList[c("StabMap", "PCA", "MultiMAP", "UINMF")]) + plot_layout(nrow = 1)
+    print(g)
+    
+      gList2 = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "type", facet = FALSE), SIMPLIFY = FALSE)
+  
+      
+      g = wrap_plots(c(gList[c("StabMap", "PCA", "MultiMAP", "UINMF")],
+                     lapply(gList2[c("StabMap", "PCA", "MultiMAP", "UINMF")],
+                            function(x) x + ggtitle("")))) + 
+        plot_layout(nrow = 2, heights = c(2,1))
+      
+      print(g)
+      ggsave(g, file = paste0("../../Figures/raw/MGD_", sim, "_", querySample,
+                            "_umaps.pdf"), height = 6, width = 10)
+      
+      
+      }
+    
+    # predict cell type labels using knn with k = 5
+    referenceLabels = colData(referenceSCE)[,labels]
+    names(referenceLabels) = colnames(referenceSCE)
+    
+    queryLabels = colData(querySCE)[,labels]
+    names(queryLabels) = colnames(querySCE)
+    
+    # calculate accuracy of the query cells
+    embeddings_accuracy = sapply(embeddings_names, function(nm) {
+      print(nm)
+      
+      # only use cells with labels
+      data_all = get(paste0(nm, "_corrected"))
+      labels_train = referenceLabels[!is.na(referenceLabels) & names(referenceLabels) %in% rownames(data_all)]
+      
+      knn_out = embeddingKNN(data_all,
+                             labels_train,
+                             type = "uniform_fixed",
+                             k_values = 5)
+      
+      acc = mean(isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels), na.rm = TRUE)
+      
+      return(acc)
+    }, simplify = FALSE)
+    
+    print(embeddings_accuracy)
+    
+    # calculate the resubstitution accuracy
+    embeddings_resub_accuracy = sapply(embeddings_names, function(nm) {
+      print(nm)
+      
+      # only use cells with labels
+      data_all = get(paste0(nm, "_corrected"))
+      labels_train = referenceLabels[!is.na(referenceLabels) & names(referenceLabels) %in% rownames(data_all)]
+      
+      knn_out = embeddingKNN(data_all,
+                             labels_train,
+                             type = "uniform_fixed",
+                             k_values = 5)
+      
+      acc = mean(isEqual(knn_out[names(labels_train),"resubstituted_labels"],
+                         labels_train), na.rm = TRUE)
+      return(acc)
+    }, simplify = FALSE)
+    
+  
+    res = rbind(res,
+                data.frame(
+                  genes = rep(length(genes), length(embeddings_names)),
+                  type = names(embeddings_names),
+                  Accuracy = unlist(embeddings_accuracy),
+                  Accuracy_resub = unlist(embeddings_resub_accuracy),
+                  querySample = rep(querySample, length(embeddings_names)),
+                  Sim = sim
+                ))
+    
+    # subset to what we have colours for
+    res <- subset(res, type %in% names(method_colours))
+    
+    # remove the projected StabMap
+    # res <- subset(res, !type %in% "StabMap")
+    
+    #### remove later:
+    g = ggplot(res, aes(x = genes, y = Accuracy)) + 
+      theme_classic() +
+      geom_point(aes(colour = type)) + 
+      geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+      NULL
+    print(g)
+    
+    g = ggplot(res, aes(x = genes, y = Accuracy_resub)) + 
+      theme_classic() +
+      geom_point(aes(colour = type)) + 
+      geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+      NULL
+    print(g)
+    
+    g1 = ggplot(res, aes(x = factor(genes), y = Accuracy)) + 
+      theme_classic() +
+      stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
+      stat_summary(aes(group = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+      xlab("Number of genes") +
+      scale_fill_manual(values = method_colours) +
+      labs(fill = "") +
+      ylim(c(0,1)) +
+      NULL
+    print(g1)
+    
+    g2 = ggplot(res, aes(x = factor(genes), y = Accuracy_resub)) + 
+      theme_classic() +
+      stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
+      stat_summary(aes(group = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+      xlab("Number of genes") +
+      scale_fill_manual(values = method_colours) +
+      labs(fill = "") +
+      ylim(c(0,1)) +
+      NULL
+    
+    g1 + ggtitle("Validation accuracy") + theme(legend.position = "none") + 
+      g2 + ggtitle("Resubstitution accuracy")
+    
+    # df = data.frame(U1 = embeddings_corrected_UMAP[[4]][,1], U2 = embeddings_corrected_UMAP[[4]][,2], score = uncertainty_scores[rownames(embeddings_corrected_UMAP[[1]])])
+    # ggplot(df, aes(x = U1, y = U2, colour = score)) + geom_point(size = 0.1) + scale_colour_gradient(low = "grey", high = "forestgreen")
+    
+    # save the results as we go:
+    saveRDS(res, file = resFile)
+    saveRDS(simGenes, file = simGenesFile)
+    
+  }
+}
+
+dim(res)
+```
+
+<!-- Save the results -->
+
+```{r}
+# saveRDS(res, file = "../../output/MGD_StabMap_example/MGD_StabMap_example_res.Rds")
+# saveRDS(simGenes, file = "../../output/MGD_StabMap_example/MGD_StabMap_example_simGenes.Rds")
+```
+
+Examine results
+
+```{r}
+res2 = readRDS("../../output/MGD_StabMap_example/MGD_StabMap_example_res.Rds")
+
+# remove the projected StabMap, and rename the unprojected StabMap
+res2 <- subset(res2, !type %in% "StabMap")
+res2[res2$type == "StabMap_unprojected","type"] <- "StabMap"
+
+typesToKeep = c("StabMap",
+                "PCA",
+                "MultiMAP",
+                "UINMF")
+
+res2$type <- factor(res2$type, levels = typesToKeep)
+
+# g = ggplot(subset(res2, type %in% typesToKeep), aes(x = genes, y = Accuracy)) + 
+#   theme_classic() +
+#   scale_x_log10() +
+#   geom_point(aes(colour = type), alpha = 0.3) + 
+#   geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+#   labs(colour = "") +
+#   NULL
+# print(g)
+# 
+# g = ggplot(subset(res2, type %in% typesToKeep), aes(x = factor(genes), y = Accuracy)) + 
+#   theme_classic() +
+#   stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge") +
+#   stat_summary(aes(group = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+#   xlab("Number of genes") +
+#   labs(fill = "") +
+#   NULL
+# print(g)
+# 
+# 
+# g = ggplot(subset(res2, type %in% typesToKeep), aes(x = genes, y = Accuracy_resub)) + 
+#   theme_classic() +
+#   scale_x_log10() +
+#   geom_point(aes(colour = type)) + 
+#   geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+#   NULL
+# print(g)
+
+g = ggplot(subset(res2, type %in% typesToKeep), aes(x = factor(genes), y = Accuracy)) + 
+  theme_classic() +
+  stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge", alpha = 0.5) +
+  stat_summary(aes(group = type, colour = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+  xlab("Number of genes") +
+  labs(fill = "") +
+  labs(colour = "") +
+  theme_classic() +
+  # geom_point(aes(colour = type)) + 
+  geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+  scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
+  NULL
+print(g)
+
+ggsave(g, file = "../../Figures/raw/MGD_accuracy_barplots.pdf", height = 6, width = 10)
+```
+
+Finish
+
+```{r}
+sessionInfo()
+```

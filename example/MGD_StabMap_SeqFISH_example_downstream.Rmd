@@ -1,0 +1,1712 @@
+---
+title: "StabMap analysis: Mouse Gastrulation Data and seqFISH - downstream"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = TRUE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+source("../scripts/initialise.R")
+```
+
+```{r}
+library(igraph)
+```
+
+```{r, include=FALSE}
+library(httr)
+req <- GET("https://api.github.com/repos/MarioniLab/SpatialMouseAtlas2020/git/trees/main?recursive=1")
+stop_for_status(req)
+filelist <- unlist(lapply(content(req)$tree, "[", "path"), use.names = F)
+suffixes = grep("functions/", filelist, value = TRUE, fixed = TRUE)
+
+urls = paste0("https://raw.githubusercontent.com/MarioniLab/SpatialMouseAtlas2020/main/", suffixes)
+
+source_https <- function(url, ...) {
+  # load package
+  require(RCurl)
+  # parse and evaluate each .R script
+  sapply(c(url, ...), function(u) {
+    eval(parse(text = getURL(u, followlocation = TRUE, cainfo = system.file("CurlSSL", "cacert.pem", package = "RCurl"))), envir = .GlobalEnv)
+  })
+}
+
+sapply(urls, source_https)
+source_https(paste0("https://raw.githubusercontent.com/MarioniLab/SpatialMouseAtlas2020/main/scripts/celltype_colours.R"))
+```
+
+Load PCA and StabMap output
+
+```{r}
+out = readRDS("../../output/MGA_seqFISH_StabMap_list.Rds")
+list2env(out, envir = .GlobalEnv)
+assay_list = readRDS("../../output/MGA_seqFISH_StabMap_assay_list.Rds")
+```
+
+# Load raw atlas expression
+
+```{r}
+library(MouseGastrulationData)
+stages = c("E8.5")
+
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt[mt[, "stage"] %in% stages, "sample"]
+
+atlas_raw = EmbryoAtlasData(type = "processed", samples = samples)
+atlas_raw <- logNormCounts(atlas_raw)
+```
+
+# Cluster the cells using StabMap output
+
+```{r}
+StabMap_SCE = SingleCellExperiment(
+  assays = list("none" = matrix(NA, nrow = 1, ncol = nrow(StabMap_corrected),
+                                dimnames = list("none",rownames(StabMap_corrected)))),
+  reducedDims = list(StabMap = StabMap_corrected))
+snn = buildSNNGraph(StabMap_SCE, use.dimred = "StabMap")
+clusters_graph = cluster_louvain(snn)
+clusters = as.numeric(membership(clusters_graph))
+names(clusters) <- colnames(StabMap_SCE)
+table(clusters, useNA = "always")
+```
+
+Check Noto, T, Chrd expression
+
+```{r}
+boxplot(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "Noto",] ~ clusters[colnames(atlas_raw)])
+boxplot(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "T",] ~ clusters[colnames(atlas_raw)])
+boxplot(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "Chrd",] ~ clusters[colnames(atlas_raw)])
+```
+
+```{r}
+notochord_cluster = which.max(tapply(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "Noto",], clusters[colnames(atlas_raw)], mean))
+
+notochord_cells = names(which(clusters == notochord_cluster))
+```
+
+```{r}
+StabMap_meta$cluster = factor(clusters[rownames(StabMap_meta)])
+
+ggplot(StabMap_meta, aes(x = coord_x, y = coord_y)) + 
+  geom_point(aes(colour = cluster == notochord_cluster), size = 0.1) + 
+  facet_wrap(~batch, scales = "free") + 
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "grey")) +
+  theme_classic()
+```
+
+# Also cluster using the PCA output
+
+```{r}
+PC_SCE = SingleCellExperiment(
+  assays = list("none" = matrix(NA, nrow = 1, ncol = nrow(PC_corrected),
+                                dimnames = list("none",rownames(PC_corrected)))),
+  reducedDims = list(StabMap = PC_corrected))
+snn = buildSNNGraph(PC_SCE, use.dimred = "StabMap")
+clusters_graph = cluster_louvain(snn)
+clusters_PC = as.numeric(membership(clusters_graph))
+names(clusters_PC) <- colnames(PC_SCE)
+table(clusters_PC, useNA = "always")
+
+addmargins(table(clusters_PC, clusters, useNA = "always"))
+```
+
+Check Noto, T, Chrd expression
+
+```{r}
+boxplot(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "Noto",] ~ clusters_PC[colnames(atlas_raw)])
+boxplot(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "T",] ~ clusters_PC[colnames(atlas_raw)])
+boxplot(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "Chrd",] ~ clusters_PC[colnames(atlas_raw)])
+```
+
+```{r}
+notochord_cluster_PC = which.max(tapply(logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == "Noto",], clusters_PC[colnames(atlas_raw)], mean))
+
+notochord_cells_PC = names(which(clusters_PC == notochord_cluster_PC))
+```
+
+```{r}
+StabMap_meta$cluster_PC = factor(clusters_PC[rownames(StabMap_meta)])
+
+ggplot(StabMap_meta, aes(x = coord_x, y = coord_y)) + 
+  geom_point(aes(colour = cluster_PC == notochord_cluster_PC), size = 0.1) + 
+  facet_wrap(~batch, scales = "free") + 
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "grey")) +
+  theme_classic()
+```
+
+# Identify markers for these groups in atlas and in seqFISH
+
+```{r}
+atlas_raw$cluster_PC = factor(clusters_PC[colnames(atlas_raw)])
+atlas_PC_markers = getMarkerArray(atlas_raw,
+                                  group = "cluster_PC",
+                                  assayName = "logcounts",
+                                  block = "sample")
+markerArrayPlot(atlas_PC_markers,
+                grouplevel = notochord_cluster_PC,
+                onlyLabelTopRanked = 10)
+
+atlas_raw$cluster_StabMap = factor(clusters[colnames(atlas_raw)])
+atlas_StabMap_markers = getMarkerArray(atlas_raw,
+                                  group = "cluster_StabMap",
+                                  assayName = "logcounts",
+                                  block = "sample")
+markerArrayPlot(atlas_StabMap_markers,
+                grouplevel = notochord_cluster,
+                onlyLabelTopRanked = 10)
+```
+
+```{r}
+seqFISH = SingleCellExperiment(
+  assays = list(logcounts = assay_list[["seqFISH"]])
+)
+seqFISH$batch = StabMap_meta[colnames(seqFISH),"batch"]
+```
+
+
+```{r}
+seqFISH$cluster_PC = factor(clusters_PC[colnames(seqFISH)]) 
+seqFISH_PC_markers = getMarkerArray(seqFISH,
+                                    group = "cluster_PC",
+                                    assayName = "logcounts",
+                                    block = "batch")
+markerArrayPlot(seqFISH_PC_markers,
+                grouplevel = notochord_cluster_PC,
+                onlyLabelTopRanked = 10)
+
+seqFISH$cluster_StabMap = factor(clusters[colnames(seqFISH)]) 
+seqFISH_StabMap_markers = getMarkerArray(seqFISH,
+                                  group = "cluster_StabMap",
+                                  assayName = "logcounts",
+                                  block = "batch")
+markerArrayPlot(seqFISH_StabMap_markers,
+                grouplevel = notochord_cluster,
+                onlyLabelTopRanked = 10)
+
+```
+
+# Plot UMAPs
+
+```{r}
+StabMap_meta$StabMap_UMAP1 = StabMap_umap[,1]
+StabMap_meta$StabMap_UMAP2 = StabMap_umap[,2]
+StabMap_meta$PC_UMAP1 = PC_umap[,1]
+StabMap_meta$PC_UMAP2 = PC_umap[,2]
+
+g1 = ggplot(StabMap_meta, aes(x = StabMap_UMAP1, y = StabMap_UMAP2)) + 
+  geom_point(aes(colour = colour), size = 0.3) + 
+  scale_colour_identity() + 
+  theme_classic() +
+  NULL
+g1
+g2 = ggplot(StabMap_meta[sample(rownames(StabMap_meta)),],
+            aes(x = StabMap_UMAP1, y = StabMap_UMAP2)) + 
+  geom_point(aes(colour = type), size = 0.3) + 
+  theme_classic() +
+  theme(legend.position = "none") +
+  NULL
+g2
+
+g3 = ggplot(StabMap_meta, aes(x = PC_UMAP1, y = PC_UMAP2)) + 
+  geom_point(aes(colour = colour), size = 0.3) + 
+  scale_colour_identity() + 
+  theme_classic() +
+  NULL
+g3
+g4 = ggplot(StabMap_meta[sample(rownames(StabMap_meta)),],
+            aes(x = PC_UMAP1, y = PC_UMAP2)) + 
+  geom_point(aes(colour = type), size = 0.3) + 
+  theme_classic() +
+  NULL
+g4
+
+```
+
+# Fit principal curves through the UMAPs of gut tube
+
+```{r}
+# library(princurve)
+
+gut_types = c("Gut", "Gut tube")
+
+gut_clusters = setdiff(names(which(prop.table(table(StabMap_meta$celltype %in% gut_types, StabMap_meta$cluster), 2)[2,] > 0.1)), notochord_cluster)
+gut_clusters_PC = setdiff(names(which(prop.table(table(StabMap_meta$celltype %in% gut_types, StabMap_meta$cluster_PC), 2)[2,] > 0.1)), notochord_cluster_PC)
+
+ggplot(StabMap_meta, aes(x = coord_x, y = coord_y)) + 
+  geom_point(aes(colour = cluster %in% gut_clusters), size = 0.1) + 
+  facet_wrap(~batch, scales = "free") + 
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "grey")) +
+  theme_classic()
+
+ggplot(StabMap_meta, aes(x = coord_x, y = coord_y)) + 
+  geom_point(aes(colour = cluster_PC %in% gut_clusters_PC), size = 0.1) + 
+  facet_wrap(~batch, scales = "free") + 
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "grey")) +
+  theme_classic()
+```
+
+Extract PC values for these cells and perform UMAP/diffusion embedding
+
+```{r}
+PC_gut = PC_corrected[clusters_PC %in% gut_clusters_PC,]
+StabMap_gut = StabMap_corrected[clusters %in% gut_clusters,]
+```
+
+```{r}
+library(destiny)
+PC_dmap = DiffusionMap(PC_gut, n_eigs = 20)
+PC_dcs <- eigenvectors(PC_dmap)
+PC_dpt = DPT(PC_dmap)[[paste0("DPT", which.max(PC_dmap$DC1))]]
+names(PC_dpt) <- rownames(PC_dcs)
+
+StabMap_dmap = DiffusionMap(StabMap_gut, n_eigs = 20)
+StabMap_dcs <- eigenvectors(StabMap_dmap)
+StabMap_dpt = DPT(StabMap_dmap)[[paste0("DPT", which.max(StabMap_dmap$DC1))]]
+names(StabMap_dpt) <- rownames(StabMap_dcs)
+```
+
+# Load AP values from spatial mouse atlas
+
+```{r}
+DV = readRDS("/Users/ghazan01/Dropbox/Backup/SpatialEmbryos/analysis_output/E8.5/gut_tube_DV_split_all.Rds")
+
+StabMap_meta$DV_class = DV[["DV_class"]][rownames(StabMap_meta)]
+StabMap_meta$AP_value = DV[["AP_value"]][rownames(StabMap_meta)]
+StabMap_meta$PC_dpt = PC_dpt[rownames(StabMap_meta)]
+StabMap_meta$StabMap_dpt = StabMap_dpt[rownames(StabMap_meta)]
+
+g1 = ggplot(subset(StabMap_meta, !is.na(PC_dpt) & !is.na(AP_value) & 
+                     DV_class == "Ventral" & batch == 1),
+            aes(x = AP_value, y = PC_dpt)) + 
+  theme_classic() +
+  theme(axis.text = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  xlab("Physical position") +
+  ylab("") +
+  geom_point(colour = "grey") + 
+  geom_smooth(method = "lm", colour = "grey") +
+  ggtitle("PCA") +
+  NULL
+g1
+
+g2 = ggplot(subset(StabMap_meta, !is.na(StabMap_dpt) & !is.na(AP_value) & 
+                     DV_class == "Ventral" & batch == 1),
+            aes(x = AP_value, y = -StabMap_dpt)) + 
+  geom_point() + 
+  theme_classic() +
+  theme(axis.text = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  xlab("Physical position") +
+  ylab("Predicted position") +
+  geom_smooth(method = "lm") +
+  ggtitle("StabMap") +
+  NULL
+
+g2 + g1
+
+StabMap_meta$seqFISH_embryo = substring(StabMap_meta[,"cell"], 1, 7)
+StabMap_meta[StabMap_meta$type != "seqFISH", "seqFISH_embryo"] <- NA
+
+StabMap_meta_split = split.data.frame(StabMap_meta,
+                                      interaction(StabMap_meta$DV_class, StabMap_meta$seqFISH_embryo))
+
+PC_cor = lapply(StabMap_meta_split, function(df) {
+  df <- subset(df, !is.na(PC_dpt) & !is.na(AP_value))
+  if (nrow(df) == 0) return(NA)
+  # return(
+  #   c(cor = abs(cor(df$AP_value, df$PC_dpt, method = "spearman", use = "p")),
+  #   ncells = nrow(df)
+  #   ))
+  abs(cor(df$AP_value, df$PC_dpt, method = "spearman", use = "p"))
+})
+
+StabMap_cor = lapply(StabMap_meta_split, function(df) {
+  df <- subset(df, !is.na(StabMap_dpt) & !is.na(AP_value))
+  if (nrow(df) == 0) return(NA)
+  abs(cor(df$AP_value, df$StabMap_dpt, method = "spearman", use = "p"))
+})
+
+cbind(PC_cor, StabMap_cor)
+
+plot(PC_cor, StabMap_cor, ylim = c(0,1), xlim = c(0,1)); abline(c(0,1), pch = 16)
+boxplot(list(PC = unlist(PC_cor), StabMap = unlist(StabMap_cor)))
+cor_df = data.frame(method = factor(rep(c("StabMap", "PCA"), times = c(length(StabMap_cor), length(PC_cor)))),
+                    cor = c(unlist(StabMap_cor), unlist(PC_cor)))
+cor_df$method <- relevel(cor_df$method, "StabMap")
+ggplot(cor_df, aes(x = method, y = cor)) + 
+  geom_boxplot(aes(fill = method), outlier.colour = NA) + 
+  geom_jitter(width = 0.1, alpha = 0.7) +
+  theme_classic() +
+  xlab("") +
+  scale_fill_manual(values = c("PCA" = "grey", "StabMap" = "cornflowerblue")) +
+  theme(legend.position = "none") +
+  ylab("Spearman correlation") +
+  # ylim(c(0,1)) +
+  NULL
+```
+
+Using the DPT from StabMap, identify genes that are different along the trajectory,
+using just scRNA-seq genes
+
+```{r}
+# genes = c("Isl1", "Gfpt2", "Tnnt1", "Has2", "Nkx2-3", "Nkx2-5", "Kctd12b", "Foxe1", "Bambi", "Cdkn1c", "Phlda2", "Hhex", "Ttr", "Sfrp5", "Upp1", "Fzd7", "Osr1", "Ripply3", "Hoxa1", "Irx2", "Fzd2", "Irx1", "Nepn", "Nudt11", "Pdzk1ip1", "Hacd4", "Prss8", "B4galt6", "Kitl", "Cdx4", "Sct", "Hoxa10", "Cxcl12", "2610528A11Rik", "Tfpi", "Trf", "Xlr3a", "Trap1a", "Rhox5", "Cited1", "Cdx1", "Hoxb2", "Zfp503", "Stra6", "Mnx1", "Tlx2", "Hoxc9", "Axin2", "Wnt5b", "Smim3", "Cdx2")
+
+genes = c("Nkx2-1", "Pax8", "Nkx2-5", "Nkx2-3", "Isl1", "Otx2", "Prrx2", "Six1", "Foxg1",
+          "Irx3", "Hoxb1", "Meis2", "Gata6", "Foxa3", "Cdx2", "Hoxa7", "Hoxb8", "Hoxc8",
+          "Hoxc9", "Tlx2")
+
+cells = intersect(intersect(names(StabMap_dpt), colnames(atlas_raw)),
+                  colnames(atlas_raw)[atlas_raw$celltype %in% gut_types])
+
+# Impute the AP_value using the joint embedding
+AP_imps = lapply(StabMap_meta_split, function(meta){
+  AP_sub = meta[, c("AP_value", "StabMap_dpt"), drop = FALSE]
+  AP_imp_list = imputeEmbedding(list(AP_sub = t(as.matrix(AP_sub))),
+                                embedding = StabMap_corrected,
+                                reference = rownames(AP_sub),
+                                query = cells,
+                                neighbours = 3)
+  tmp = t(AP_imp_list[[1]])
+  AP_imp = tmp[, "AP_value"]
+  return(AP_imp)
+})
+pairs(AP_imps)
+# all are positively correlated, calculate the geometric mean ranking for the cells
+
+AP_imp = apply(do.call(cbind, lapply(AP_imps, rank)),1,gm_mean)
+pairs(list(rank = AP_imp, AP_imps))
+
+
+if (FALSE) {
+gList = sapply(genes[c(1, 5, 10, 15, 20)], function(x) {
+  df_plot = data.frame(
+    # x = StabMap_dpt[cells],
+    # x = StabMap_umap[cells,1],                 
+    x = AP_imp[cells, "AP_value"],
+    y = logcounts(atlas_raw)[rowData(atlas_raw)$SYMBOL == x,cells])
+  # df_plot <- subset(df_plot, x > -1)
+  g = ggplot(df_plot, aes(x = x, y = y)) + 
+    theme_classic() +
+    geom_smooth(span = 0.5, method = "loess") +
+    theme(axis.text = element_blank()) +
+    geom_point() +
+    ylab(x) + 
+    xlab("")
+  return(g)
+}, simplify = FALSE)
+
+wrap_plots(gList, ncol = 1)
+}
+
+atlas_raw$AP_bin = setNames(cut(AP_imp, 15), names(AP_imp))[colnames(atlas_raw)]
+# generate a heatmap of mean expression binned by AP
+atlas_AP_bin = scuttle::aggregateAcrossCells(atlas_raw, atlas_raw$AP_bin)
+assay(atlas_AP_bin, "logcounts") <- assay(summarizeAssayByGroup(
+  logcounts(atlas_raw), atlas_raw$AP_bin
+), "mean")
+
+# genes = c("Jag1", "Notch1", "Shh", "Ptch1")
+
+genes_ens = sapply(genes, function(x) {
+  rownames(atlas_raw)[rowData(atlas_raw)$SYMBOL == x][1]
+})
+
+heatmap(logcounts(atlas_AP_bin)[rev(genes_ens),rev(colnames(atlas_AP_bin))],
+        Rowv = NA, Colv = NA,
+        labRow = rev(names(genes_ens)),
+        col = colorRampPalette(c("grey", "cornflowerblue", "black"))(100))
+```
+
+# Test for differential genes along the continuum
+
+```{r}
+library(TSCAN)
+
+de_ap = as.data.frame(testPseudotime(logcounts(atlas_raw),
+                       AP_imp[colnames(atlas_raw)],
+                       block = atlas_raw$sample,
+                       get.spline.coef = TRUE
+                       ))
+de_ap$symbol = rowData(atlas_raw)$SYMBOL
+
+table(de_ap$FDR < 0.01, useNA = "always")
+
+# View(de_ap)
+ggplot(de_ap, aes(x = logFC, y = -log10(p.value))) + 
+  geom_point(aes(colour = FDR < 0.01)) + 
+  geom_text_repel(aes(label = symbol), data = subset(de_ap, p.value < 1e-20))
+
+order = apply(logcounts(atlas_AP_bin), 1, which.max)
+
+genes_ens = rownames(subset(de_ap, FDR < 0.01 & !is.na(FDR)))
+genes_ens <- names(sort(order[genes_ens], decreasing = TRUE))
+
+names(genes_ens) <- rowData(atlas_raw)[genes_ens, "SYMBOL"]
+# head(de_ap[genes_ens, "symbol"])
+
+# genes_ens <- genes_ens[1:50]
+
+heatmap(logcounts(atlas_AP_bin)[rev(genes_ens),rev(colnames(atlas_AP_bin))],
+        Rowv = NA, Colv = NA,
+        labRow = rev(names(genes_ens)),
+        col = colorRampPalette(c("grey", "cornflowerblue", "black"))(100))
+```
+
+# cellchat
+
+```{r}
+# downloaded from https://github.com/sqjin/CellChat/blob/master/data/CellChatDB.mouse.rda
+load("/Users/ghazan01/Downloads/CellChatDB.mouse.rda")
+
+names(CellChatDB.mouse)
+dim(CellChatDB.mouse[["interaction"]])
+dim(CellChatDB.mouse[["geneInfo"]])
+
+net = CellChatDB.mouse[["interaction"]]
+
+table(net$pathway_name)
+
+# net_sub = subset(net, pathway_name %in% c("BMP", "WNT", "NOTCH", "FGF"))
+# net_sub$ligand
+# net_sub$interaction_name_2
+intersect(net$ligand, names(genes_ens))
+intersect(net$receptor, names(genes_ens))
+
+genes_ens_ligand = genes_ens[intersect(net$ligand, names(genes_ens))]
+genes_ens_ligand <- names(sort(order[genes_ens_ligand], decreasing = TRUE))
+names(genes_ens_ligand) <- rowData(atlas_raw)[genes_ens_ligand, "SYMBOL"]
+
+heatmap(logcounts(atlas_AP_bin)[rev(genes_ens_ligand),rev(colnames(atlas_AP_bin))],
+        Rowv = NA, Colv = NA,
+        labRow = rev(names(genes_ens_ligand)),
+        col = colorRampPalette(c("grey", "cornflowerblue", "black"))(100))
+
+
+genes_ens_receptor = genes_ens[intersect(net$receptor, names(genes_ens))]
+genes_ens_receptor <- names(sort(order[genes_ens_receptor], decreasing = TRUE))
+names(genes_ens_receptor) <- rowData(atlas_raw)[genes_ens_receptor, "SYMBOL"]
+
+heatmap(logcounts(atlas_AP_bin)[rev(genes_ens_receptor),rev(colnames(atlas_AP_bin))],
+        Rowv = NA, Colv = NA,
+        labRow = rev(names(genes_ens_receptor)),
+        col = colorRampPalette(c("grey", "cornflowerblue", "black"))(100))
+
+intersect(subset(net, ligand %in% intersect(net$ligand, names(genes_ens)))$receptor,
+          rowData(atlas_raw)$SYMBOL)
+
+
+
+# pathways = net[net$ligand %in% intersect(net$ligand, names(genes_ens)), "pathway_name"]
+# 
+# net_sub = subset(net, pathway_name %in% pathways)
+# net_sub$ligand
+# # net_sub$interaction_name_2
+
+```
+
+
+# Gene ontology analysis
+
+```{r}
+rnames = rowData(atlas_raw)$SYMBOL
+GO_filename = "../../output/GO_list.Rds"
+if (!file.exists(GO_filename)) {
+  library(GO.db)
+  library(org.Mm.eg.db)
+  keys = keys(org.Mm.eg.db)
+  columns(org.Mm.eg.db)
+  GO_info = AnnotationDbi::select(org.Mm.eg.db, keys=keys, columns = c("SYMBOL", "GO"))
+  
+  keep = GO_info$SYMBOL %in% rnames
+  table(keep)
+  GO_info_filt = GO_info[keep,]
+  
+  # at least 10 genes in the term and less than 500
+  allTerms = names(which(table(GO_info_filt$GO) >= 10 & table(GO_info_filt$GO) <= 500))
+  
+  GO_info_terms = AnnotationDbi::select(GO.db, columns = columns(GO.db), keys = allTerms)
+  rownames(GO_info_terms) <- GO_info_terms$GOID
+  
+  allTermNames = GO_info_terms[allTerms, "TERM"]
+  names(allTermNames) <- allTerms
+  
+  GO_list = sapply(allTerms, function(term) {
+    print(term)
+    genes = GO_info_filt[GO_info_filt$GO == term, "SYMBOL"]
+    return(sort(unique(genes[!is.na(genes)])))
+  }, simplify = FALSE)
+  names(GO_list) <- allTermNames
+  
+  saveRDS(GO_list, file = GO_filename)
+} else {
+  GO_list = readRDS(GO_filename)
+}
+
+
+sig_genes = names(genes_ens)
+
+GO_list_sig = GO_list[unlist(lapply(GO_list, function(x) any(x %in% sig_genes)))]
+length(GO_list_sig)
+
+steplength = 40
+steps = c(steplength*(1:floor(length(sig_genes)/steplength)))
+steps_ind = sapply(steps, function(x){
+  c(max(c(1,x-steplength)):min(c(length(sig_genes), x+steplength)))
+}, simplify = FALSE)
+names(steps_ind) <- 1:length(steps_ind)
+
+# GO_testing_genes = split(sig_genes, as.integer(cut(1:length(sig_genes), 5)))
+GO_testing_genes = lapply(steps_ind, function(x) sig_genes[x])
+GO_testing_genes[["all"]] <- sig_genes
+
+length(GO_testing_genes)
+head(names(GO_testing_genes))
+GO_res_list = lapply(GO_testing_genes, function(set){
+  genesetGOtest(set, rnames, GO_list_sig)
+})
+
+
+ntop = 10
+library(stringr)
+gList_GO = lapply(GO_res_list, function(pval) {
+  df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
+                  pval = pval,
+                  qval = p.adjust(pval, method = "BH"))
+  df$label = df$term
+  df$label[pval != 1] <- ""
+  df_sorted = reshape::sort_df(df, "pval")[1:ntop,]
+  df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
+  
+  g = ggplot(df_sorted, aes(x = term, y = -log10(pval), fill = qval < 0.05)) +
+    theme_classic() +
+    geom_col() +
+    coord_flip() +
+    xlab("") +
+    ylab(expression("-log10(P-value)")) +
+    # geom_hline(yintercept = -log10(0.01), colour = "red", linetype = "dashed", size = 1.2) +
+    scale_fill_manual(values = c("TRUE" = "dimgrey", "FALSE" = "peachpuff")) +
+    theme(legend.position = "none") +
+    theme(axis.text.y = element_text(size = 10)) +
+    theme(title = element_text(hjust = 0.5)) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 30)) +
+    NULL
+  return(g)
+  
+})
+gList_GO[[1]]
+wrap_plots(gList_GO, nrow = 1)
+
+
+# pathway dotplot
+df_list = lapply(GO_res_list[-length(GO_res_list)], function(pval) {
+df = data.frame(term = factor(names(pval), levels = c(names(pval), "")),
+                  pval = pval,
+                  qval = p.adjust(pval, method = "BH"))
+  df$label = df$term
+  df$label[pval != 1] <- ""
+  df$rank <- rank(df$pval)
+  # df_sorted = reshape::sort_df(df, "pval")[1:ntop,]
+  # df_sorted$term = factor(df_sorted$term, levels =  rev(df_sorted$term))
+  return(df)
+})
+df_list_named <- mapply(function(x,y) {
+  x$genes <- y
+  return(x)
+}, df_list, names(df_list), SIMPLIFY = FALSE)
+
+df_named = do.call(rbind, df_list_named)
+df_named$genes <- factor(df_named$genes, levels = gtools::mixedsort(unique(df_named$genes)))
+
+# pick terms that are top 5 in any class
+topterms = subset(df_named, rank <= 5 & qval < 0.05)[,"term"]
+
+df_named_sub = subset(df_named, term %in% topterms)
+# df_named_sub$term <- factor(df_named_sub$term, levels = 
+#                               unique(reshape::sort_df(df_named_sub, c("genes", "pval"))$term))
+
+pmat = reshape::cast(df_named_sub, genes ~ term, value = "pval", df = TRUE)
+term_order = apply(pmat, 2, function(x) {
+  weighted.mean(c(1:length(x)), w = -log10(x))
+})
+
+df_named_sub$term <- factor(df_named_sub$term, levels =
+                              names(sort(term_order)))
+df_named_sub$genes <- factor(df_named_sub$genes,
+                             levels = rev(unique(df_named_sub$genes)))
+
+ggplot(df_named_sub, aes(x = term, y = genes)) + 
+  geom_point(aes(size = -log10(pval), colour = qval < 0.05)) + 
+  scale_colour_manual(values = c("TRUE" = "dimgrey", "FALSE" = "peachpuff")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, vjust = 1, hjust = 1, size = 10)) +
+  xlab("") + 
+  ylab("") +
+  NULL
+```
+
+
+# Finish (for now)
+
+```{r}
+sessionInfo()
+```
+
+```{r}
+knitr::knit_exit()
+```
+
+
+
+
+
+
+
+
+# Perform scHOT variability testing along this continuum
+
+```{r}
+library(scHOT)
+gene_to_test <- as.matrix(c(genes_ens))
+# Build the scHOT object
+# First we build the scHOT object, which is based on the SingleCellExperiment object class. scHOT objects can be built either from a matrix format or from an existing SingleCellExperiment object. In this case, we have matrix data so we build the scHOT object using scHOT_buildFromMatrix. Since the liver data represents a trajectory, we set the positionType as "trajectory", and provide the column name of the cell metadata (argument cellData) for which the cells should be ordered.
+
+atlas_sub = atlas_raw[,names(AP_imp)]
+atlas_sub$AP_imp <- AP_imp
+
+scHOT_traj <- scHOT_buildFromSCE(
+  atlas_sub,
+  assayName = "logcounts",
+  positionType = "trajectory",
+  positionColData = "AP_imp"
+)
+scHOT_traj
+
+scHOT_traj_wrap = scHOT(scHOT_traj,
+                        testingScaffold = gene_to_test,
+                        higherOrderFunction = matrixStats::weightedVar,
+                        higherOrderFunctionType = "weighted",
+                        numberPermutations = 50)
+slot(scHOT_traj_wrap, "scHOT_output")
+
+plotOrderedExpression(scHOT_traj_wrap, genes = c(gene_to_test[c("Hoxb8", "Hoxc8", "Tlx2"),]))
+
+plotHigherOrderSequence(scHOT_traj_wrap,
+                        gene = c(gene_to_test[c("Hoxb8", "Hoxc8", "Tlx2"),]))
+
+plot(scHOT_traj_wrap@scHOT_output$higherOrderStatistic, 
+     -log10(scHOT_traj_wrap@scHOT_output$pvalEstimated), type = "n")
+text(scHOT_traj_wrap@scHOT_output$higherOrderStatistic, 
+     -log10(scHOT_traj_wrap@scHOT_output$pvalEstimated),
+     label = rownames(gene_to_test))
+```
+
+
+
+
+
+
+
+
+
+```{r}
+cols = setNames(StabMap_meta$colour, rownames(StabMap_meta))
+
+plot(StatMap_umap, col = cols[rownames(StatMap_umap)],
+     pch = 16, cex = 0.5, asp = 1)
+plot(PC_umap, col = cols[rownames(PC_umap)],
+     pch = 16, cex = 0.5, asp = 1)
+plot(SC_corrected_umap, col = factor(SC_batch[rownames(SC_corrected_umap)]),
+     pch = 16, cex = 0.5, asp = 1)
+ind = sample(rownames(SC_corrected_umap))
+plot(SC_corrected_umap[ind,], col = factor(SC_type[rownames(SC_corrected_umap)][ind]),
+     pch = 16, cex = 0.3, asp = 1)
+```
+
+# generate interactive graph
+
+```{r, eval = FALSE}
+library(ggiraph)
+library(cowplot)
+
+# coord_x = setNames(c(meta[,"x_global_affine"],
+#                      reducedDim(atlas, "umap")[,1],
+#                      # Nowotschin_umap[colnames(Nowotschin),1]
+#                      rep(NA, ncol(Nowotschin_filt))
+#                      ),
+#                    c(rownames(meta), colnames(atlas), colnames(Nowotschin_filt)
+#                      )
+# )
+# coord_y = setNames(c(-meta[,"y_global_affine"], reducedDim(atlas, "umap")[,2],
+#                      # Nowotschin_umap[colnames(Nowotschin),2]
+#                      rep(NA, ncol(Nowotschin_filt))
+#                      ),
+#                    c(rownames(meta), colnames(atlas), colnames(Nowotschin_filt)
+#                      )
+# )
+
+df = data.frame(
+  cell = rownames(SC_corrected_umap),
+  SC_UMAP1 = SC_corrected_umap[,1],
+  SC_UMAP2 = SC_corrected_umap[,2],
+  PC_UMAP1 = PC_corrected_umap[,1],
+  PC_UMAP2 = PC_corrected_umap[,2],
+  type = SC_coord[rownames(SC_corrected_umap)],
+  batch = SC_batch[rownames(SC_corrected_umap)],
+  celltype = celltypes[rownames(SC_corrected_umap)],
+  coord_x = coord_x[rownames(SC_corrected_umap)],
+  coord_y = coord_y[rownames(SC_corrected_umap)]
+)
+
+# df_sub = subset(df, celltype %in% c("Gut tube", "Gut", "Definitive endoderm", "Def. endoderm") |
+#                   grepl("Gut tube", celltype))
+# df_sub = subset(df, grepl("embryo", cell) & celltype %in% "Gut tube")
+# df_sub = subset(df, grepl("cell_", cell))
+# df_sub = df
+df_sub = subset(df, type %in% c("embryo1", "Nowotschin"))
+
+gg1 <- ggplot(df_sub) +
+  geom_point_interactive(aes(x = SC_UMAP1, y = SC_UMAP2,
+                             tooltip = cell, data_id = cell, colour = celltype), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  # scale_colour_manual(values = celltype_colours) +
+  coord_fixed() + 
+  NULL
+gg1
+
+# generate the second graph in similar way
+gg2 <- ggplot(df_sub) +
+  geom_point_interactive(aes(x = coord_x, y = coord_y, 
+                             tooltip = cell, data_id = cell, colour = celltype), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  # scale_colour_manual(values = celltype_colours) +
+  facet_wrap(~type, scales = "free") +
+  # coord_fixed() +
+  NULL
+gg2
+
+gg3 <- ggplot(df_sub) +
+  geom_point_interactive(aes(x = PC_UMAP1, y = PC_UMAP2, color = celltype, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  # scale_colour_manual(values = celltype_colours) + 
+  coord_fixed() +
+  NULL
+gg3
+
+
+
+# build the interactive plot with both graphs, note the 'only_shiny' argument
+# and other options allow for lasso selection while working interactively
+girafe(ggobj = plot_grid(gg2, gg3, rel_widths = c(1,1), nrow = 1),
+       width_svg = 8, height_svg = 4,
+       options = list(
+         opts_selection(type = "multiple",
+                        css = "fill:#FF3333;stroke:black;",
+                        only_shiny = FALSE)
+       ))
+
+
+
+
+# tmp:
+# cells = rownames(subset(df, SC_UMAP1 < 0 & SC_UMAP2 < -7))
+# gg1 + geom_point_interactive(aes(x = SC_UMAP1, y = SC_UMAP2,
+#                              tooltip = cell, data_id = cell), colour = "black", size = .5,
+#                              data = df[cells,])
+# addmargins(table(df[cells,]$celltype, df[cells,]$type, useNA = "always"))
+# saveRDS(cells, file = "../../output/Notochord_cells.Rds")
+
+# cells2 = rownames(SC_corrected_umap[SC_corrected_umap[,1] < -5 & SC_corrected_umap[,2] < -5,])
+# saveRDS(cells, file = "../../output/Notochord_cells_Nowotschin.Rds")
+```
+
+# subset to gut cells
+
+```{r}
+gut_cells = names(celltypes)[which(celltypes %in% c("Gut", "Gut tube"))]
+gut_tube_cells = names(celltypes)[which(celltypes %in% c("Gut", "Gut tube"))]
+
+# typesToCompare = c("Gut", "Gut tube")
+# typesToCompare = c("Def. endoderm", "Definitive endoderm")
+typesToCompare = c("Gut", "Gut tube", "Def. endoderm", "Definitive endoderm")
+
+# assay_list_gut = lapply(assay_list, function(x){
+#   x[,intersect(colnames(x), gut_cells)]
+# })
+
+
+# PC_gut = mapPCA(assay_list_gut)
+# colnames(PC_gut) <- paste0("joint_PC", seq_len(ncol(PC_gut)))
+# 
+# SC_out_gut = stabMapGeneralised(assay_list_gut,
+#                             reference_list = c("atlas", "seqFISH"),
+#                             projectAll = TRUE,
+#                             plot = FALSE,
+#                             scale.center = TRUE,
+#                             scale.scale = TRUE)
+# 
+
+# SC_out_joint_gut <- cbind(SC_out_gut, PC[rownames(SC_out_gut),])
+
+# SC_gut = reWeightEmbedding(SC_out_joint_gut, 
+#                        weights = list("seqFISH_PC" = 1,
+#                                       "atlas_PC" = 1,
+#                                       "joint_PC" = 1))
+
+
+# SC_corrected_gut = reducedMNN_batchFactor(SC_gut, SC_batch)
+
+# SC_corrected_umap_gut = calculateUMAP_rnames(SC_corrected_gut)
+
+SC_corrected_umap_gut = SC_corrected_umap
+
+# 
+# SC_corrected_sub = SC_corrected[which(celltypes %in% c("Gut", "Gut tube", "Surface ectoderm")),]
+# 
+# SC_corrected_umap_sub = calculateUMAP_rnames(SC_corrected_sub)
+
+
+plot(SC_corrected_umap_gut, col = cols[rownames(SC_corrected_umap_gut)],
+     pch = 16, cex = 0.5, asp = 1)
+
+df_sub = df[rownames(SC_corrected_umap_gut),]
+df_sub$SC_UMAP1_gut = SC_corrected_umap_gut[,1]
+df_sub$SC_UMAP2_gut = SC_corrected_umap_gut[,2]
+
+gg1 <- ggplot(df) +
+  geom_point_interactive(aes(x = SC_UMAP1, y = SC_UMAP2, color = celltype, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  scale_colour_manual(values = celltype_colours) + 
+  coord_fixed() +
+  NULL
+gg1
+
+gg2 <- ggplot(df_sub) +
+  geom_point_interactive(aes(x = PC_UMAP1, y = PC_UMAP2, color = celltype, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  scale_colour_manual(values = celltype_colours) + 
+  coord_fixed() +
+  NULL
+gg2
+
+girafe(ggobj = plot_grid(gg1, gg2), width_svg = 8, height_svg = 4,
+       options = list(
+         opts_selection(type = "multiple",
+                        css = "fill:#FF3333;stroke:black;",
+                        only_shiny = FALSE)
+       )
+       )
+
+
+gg1 + geom_vline(xintercept = c(6, 8)) + geom_hline(yintercept = 1.5)
+diff_cells = rownames(subset(df, SC_UMAP1 > 6 & 
+                               SC_UMAP1 < 8 & 
+                               SC_UMAP2 > 1.5 &
+                               # celltype %in% c("Gut", "Gut tube", 
+                               #                 "Definitive endoderm",
+                               #                 "Def. endoderm") &
+                               TRUE
+))
+
+table(SC_type[diff_cells])
+table(SC_batch[diff_cells])
+sort(table(celltypes[diff_cells]))
+table(celltypes[diff_cells], SC_type[diff_cells], useNA = "always")
+
+# are there any marker genes between these 36 cells and the 
+# rest of the gut tube cells in the atlas?
+
+# see where these cells are in the PC umap:
+gg2 <- ggplot(df) +
+  geom_point_interactive(aes(x = SC_UMAP1, y = SC_UMAP2, color = cell %in% diff_cells, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  # scale_colour_manual(values = celltype_colours) + 
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "grey")) +
+  coord_fixed() +
+  NULL
+gg2
+
+gg2 <- ggplot(df) +
+  geom_point_interactive(aes(x = PC_UMAP1, y = PC_UMAP2, color = cell %in% diff_cells, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  # scale_colour_manual(values = celltype_colours) + 
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "grey")) +
+  coord_fixed() +
+  NULL
+gg2
+
+gg3 <- ggplot(df) +
+  geom_point_interactive(aes(x = coord_x, y = coord_y, color = cell %in% diff_cells, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  # scale_colour_manual(values = celltype_colours) + 
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "grey")) +
+  # coord_fixed() +
+  facet_wrap(~batch, scales = "free") +
+  NULL
+gg3
+
+
+
+# identify markers for these cells, compare against union of other cells
+background_cells = union(diff_cells, names(celltypes)[which(celltypes %in% typesToCompare)])
+
+
+
+
+de_out = scran::findMarkers(x = logcounts(atlas_raw)[,intersect(colnames(atlas_raw), background_cells)],
+                            groups = intersect(colnames(atlas_raw), background_cells) %in% diff_cells)
+de_out[["TRUE"]]
+
+ggplot(as.data.frame(de_out[["TRUE"]]), aes(x = logFC.FALSE, y = -log10(p.value))) + geom_point()
+
+syms = rowData(atlas_raw)[,2]
+names(syms) <- rowData(atlas_raw)[,1]
+
+de_out[["TRUE"]]$symbol = syms[rownames(de_out[["TRUE"]])]
+de_out[["TRUE"]]$inSeqFISH = de_out[["TRUE"]]$symbol %in% rownames(exprs)
+
+subset(de_out[["TRUE"]], logFC.FALSE > 0)
+
+
+
+
+
+de_out_seqFISH = scran::findMarkers(x = seqFISH[,intersect(colnames(seqFISH), background_cells)],
+                                    groups = intersect(colnames(seqFISH), background_cells) %in% diff_cells)
+de_out_seqFISH[["TRUE"]]
+
+ggplot(as.data.frame(de_out_seqFISH[["TRUE"]]), aes(x = logFC.FALSE, y = -log10(p.value))) + geom_point()
+
+subset(de_out_seqFISH[["TRUE"]], logFC.FALSE > 0)
+
+tmp = sapply(rownames(de_out_seqFISH[["TRUE"]]), function(gene){
+  rownames(de_out[["TRUE"]])[which(de_out[["TRUE"]]$symbol == gene)[1]]
+})
+
+plot(de_out[["TRUE"]][tmp,"logFC.FALSE"], de_out_seqFISH[["TRUE"]][,"logFC.FALSE"], 
+     type = "n",
+     main = "Correspondence between seqFISH and 10X data")
+text(de_out[["TRUE"]][tmp,"logFC.FALSE"], de_out_seqFISH[["TRUE"]][,"logFC.FALSE"],
+     labels = names(tmp))
+abline(c(0,1), lty = 2)
+
+gut_tube_cells_int = intersect(gut_tube_cells, colnames(exprs))
+boxplot(seqFISH["Shh_neighbours", gut_tube_cells_int] ~ I(gut_tube_cells_int %in% diff_cells))
+
+
+genes = rownames(exprs)
+plot(de_out_seqFISH[["TRUE"]][genes,"logFC.FALSE"],
+     de_out_seqFISH[["TRUE"]][paste0(genes, "_neighbours"),"logFC.FALSE"], type = "n")
+text(de_out_seqFISH[["TRUE"]][genes,"logFC.FALSE"],
+     de_out_seqFISH[["TRUE"]][paste0(genes, "_neighbours"),"logFC.FALSE"],
+     labels = genes)
+# abline(c(0,1), lty = 2)
+abline(lm(de_out_seqFISH[["TRUE"]][paste0(genes, "_neighbours"),"logFC.FALSE"] ~
+     de_out_seqFISH[["TRUE"]][genes,"logFC.FALSE"]), lty = 2)
+abline(h = 0, v = 0, lty = 3)
+
+
+
+
+# for what components in SC are those cells different?
+de_out_SC = scran::findMarkers(x = t(SC_corrected[intersect(rownames(SC_corrected), background_cells),]),
+                                    groups = intersect(rownames(SC_corrected), background_cells) %in% diff_cells)
+de_out_SC[["TRUE"]]
+
+ggplot(as.data.frame(de_out_SC[["TRUE"]]), aes(x = logFC.FALSE, y = -log10(p.value))) + geom_point()
+
+subset(de_out_SC[["TRUE"]], logFC.FALSE > 0)
+
+
+```
+
+
+
+
+Integrate seqfish, all chimera cells and atlas
+
+
+```{r}
+# decomp <- modelGeneVar(seqFISH)
+# hvgs <- rownames(decomp)[decomp$mean>0.01 & decomp$p.value <= 0.05]
+# length(hvgs)
+# seqFISH_filt <- seqFISH[hvgs,]
+# table(grepl("neighbours", hvgs))
+
+# needs dense matrices for some reason
+# also cannot handle missing values
+assay_list = list(seqFISH = as.matrix(seqFISH),
+                  atlas = cbind(as.matrix(logcounts(atlas)),
+                                as.matrix(logcounts(Tchim)[rownames(atlas),]),
+                                as.matrix(logcounts(WTchim)[rownames(atlas),]),
+                                as.matrix(logcounts(Tal1chim)[rownames(atlas),])))
+
+plotFeatureOverlaps(assay_list)
+
+# run stabmap
+
+SC_out = stabMapGeneralised(assay_list,
+                              reference_list = c("atlas", "seqFISH"),
+                              projectAll = TRUE,
+                              plot = FALSE,
+                              scale.center = TRUE,
+                              scale.scale = TRUE)
+
+SC = reWeightEmbedding(SC_out, weights = list("seqFISH" = 3, "atlas" = 1))
+
+dim(SC)
+barplot(colSums(SC^2))
+
+SC_coord = setNames(c(meta[,"embryo"],
+                      rep("atlas", ncol(atlas)),
+                      rep("Tchim", ncol(Tchim)),
+                      rep("WTchim", ncol(WTchim)),
+                      rep("Tal1chim", ncol(Tal1chim))
+                      ),
+                    c(rownames(meta), colnames(atlas),
+                      colnames(Tchim), colnames(WTchim), colnames(Tal1chim)))
+table(SC_coord)
+
+SC_batch = setNames(c(interaction(meta[,"z"], meta[,"embryo"]), 
+                      paste0("atlas_", atlas$sample),
+                      paste0("Tchim_", Tchim$sample),
+                      paste0("WTchim_", WTchim$sample),
+                      paste0("Tal1chim_", Tal1chim$sample)),
+                    c(rownames(meta), colnames(atlas),
+                      colnames(Tchim), colnames(WTchim),
+                      colnames(Tal1chim)))
+table(SC_batch)
+
+SC_type = setNames(c(rep("seqFISH", nrow(meta)),
+                     rep("atlas", ncol(atlas)),
+                     rep("Tchim", ncol(Tchim)),
+                     rep("WTchim", ncol(WTchim)),
+                     rep("Tal1chim", ncol(Tal1chim))
+                     ),
+                    c(rownames(meta), colnames(atlas),
+                      colnames(Tchim), colnames(WTchim),
+                      colnames(Tal1chim)))
+table(SC_type)
+
+cols = setNames(c(celltype_colours[as.character(meta[,"celltype_mapped_refined"])],
+                  celltype_colours[as.character(atlas$celltype)],
+                  celltype_colours[as.character(Tchim$celltype.mapped)],
+                  celltype_colours[as.character(WTchim$celltype.mapped)],
+                  celltype_colours[as.character(Tal1chim$celltype.mapped)]
+),
+c(rownames(meta), colnames(atlas),
+  colnames(Tchim), colnames(WTchim), colnames(Tal1chim))
+)
+
+celltypes = setNames(c(as.character(meta[,"celltype_mapped_refined"]),
+                       as.character(atlas$celltype),
+                       as.character(Tchim$celltype.mapped),
+                       as.character(WTchim$celltype.mapped),
+                       as.character(Tal1chim$celltype.mapped)),
+                     c(rownames(meta), colnames(atlas),
+                       colnames(Tchim), colnames(WTchim),
+                       colnames(Tal1chim))
+)
+
+SC_corrected = reducedMNN_batchFactor(SC, SC_batch)
+# saveRDS(SC_corrected, file = "../../output/MGA_Tchim_WTchim_seqFISH_StabMap_corrected.Rds")
+
+SC_corrected_umap = calculateUMAP_rnames(SC_corrected)
+# saveRDS(SC_corrected_umap, file = "../../output/MGA_Tchim_WTchim_seqFISH_StabMap_corrected_umap.Rds")
+
+SC_corrected_list = list(
+  StabMap = SC_corrected,
+  StatMap_umap = SC_corrected_umap,
+  StabMap_meta = data.frame(cell = rownames(SC_corrected),
+                            batch = SC_batch[rownames(SC_corrected_umap)],
+                            type = SC_type[rownames(SC_corrected_umap)],
+                            celltype = celltypes[rownames(SC_corrected_umap)])
+)
+saveRDS(SC_corrected_list, file = "../../output/MGA_seqFISH_chimera_StabMap_list.Rds")
+
+# also perform PCA:
+
+PC = mapPCA(assay_list)
+PC_corrected = reducedMNN_batchFactor(PC, SC_batch)
+PC_corrected_umap = calculateUMAP_rnames(PC_corrected)
+
+```
+
+
+```{r}
+plot(SC_corrected_umap, col = cols[rownames(SC_corrected_umap)],
+     pch = 16, cex = 0.5)
+plot(SC_corrected_umap, col = factor(SC_batch[rownames(SC_corrected_umap)]),
+     pch = 16, cex = 0.5)
+plot(SC_corrected_umap, col = factor(SC_type[rownames(SC_corrected_umap)]),
+     pch = 16, cex = 0.5)
+```
+
+# generate interactive graph
+
+```{r, eval = FALSE}
+library(ggiraph)
+library(cowplot)
+
+coord_x = setNames(c(meta[,"x_global_affine"], reducedDim(atlas, "umap")[,1]),
+                   c(rownames(meta), colnames(atlas))
+)
+coord_y = setNames(c(-meta[,"y_global_affine"], reducedDim(atlas, "umap")[,2]),
+                   c(rownames(meta), colnames(atlas))
+)
+
+df = data.frame(
+  cell = rownames(SC_corrected_umap),
+  SC_UMAP1 = SC_corrected_umap[,1],
+  SC_UMAP2 = SC_corrected_umap[,2],
+  type = SC_coord[rownames(SC_corrected_umap)],
+  celltype = celltypes[rownames(SC_corrected_umap)],
+  coord_x = coord_x[rownames(SC_corrected_umap)],
+  coord_y = coord_y[rownames(SC_corrected_umap)]
+)
+
+# df_sub = subset(df, grepl("embryo1", cell))
+df_sub = df
+
+gg1 <- ggplot(df_sub) +
+  geom_point_interactive(aes(x = SC_UMAP1, y = SC_UMAP2, color = celltype, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  scale_colour_manual(values = celltype_colours) + 
+  coord_fixed() +
+  NULL
+gg1
+
+# generate the second graph in similar way
+gg2 <- ggplot(df_sub) +
+  geom_point_interactive(aes(x = coord_x, y = coord_y, color = celltype, 
+                             tooltip = cell, data_id = cell), size = .5) +
+  theme_classic() +
+  theme(legend.position = "none") + 
+  scale_colour_manual(values = celltype_colours) + 
+  facet_wrap(~type, scales = "free") +
+  # coord_fixed() +
+  NULL
+
+# build the interactive plot with both graphs, note the 'only_shiny' argument
+# and other options allow for lasso selection while working interactively
+girafe(ggobj = plot_grid(gg1, gg2), width_svg = 8, height_svg = 4,
+       options = list(
+         opts_selection(type = "multiple",
+                        css = "fill:#FF3333;stroke:black;",
+                        only_shiny = FALSE)
+       ))
+```
+
+Generate naively imputed gene expression matrix
+
+```{r}
+# function defined in StabMap_functions.R
+
+# this can be run parallel with lapply on the query cells
+reference = colnames(atlas)
+query = grep("z2", grep("embryo1", colnames(seqFISH), value = TRUE), value = TRUE)
+# query = colnames(seqFISH)
+
+imp = imputeEmbedding(assay_list, embedding = SC_corrected, reference = reference, query = query)
+imp_PC = imputeEmbedding(assay_list, embedding = PC_corrected, reference = reference, query = query)
+
+gene = "Dlx5"
+
+df = data.frame(coord_x = meta[colnames(imp[[1]]),"x_global_affine"],
+                coord_y = -meta[colnames(imp[[1]]),"y_global_affine"],
+                expr = imp[[1]][gene,],
+                expr_PC = imp_PC[[1]][gene,])
+
+g = ggplot(df, aes(x = coord_x, y = coord_y)) +
+  # geom_point(size = 0.2) + 
+  theme_classic() +
+  scale_colour_gradient2(low = "gray", mid = "cornflowerblue", high = "black",
+                         midpoint = max(df$expr)/2) +
+  coord_fixed() +
+  labs(colour = gene) +
+  NULL
+
+g1 = g + geom_point(size = 0.2, aes(colour = expr_PC)) + 
+  ggtitle("Imputed expression after PCA") +
+  NULL
+
+g2 = g + geom_point(size = 0.2, aes(colour = expr)) + 
+  ggtitle("Imputed expression after StabMap") +
+  NULL
+
+g1 + g2
+```
+
+# Load smFISH measurements of spatial embryos
+
+```{r}
+smFISH = readRDS("../../../SpatialEmbryos/analysis_output/smFISH_counts.Rds")
+```
+
+Get smoothed values for smFISH
+
+```{r}
+# get smoothed expression
+smoothlist_sm = sapply(names(sceSplit), function(s) {
+  sce_sub = sceSplit[[s]]
+  graph_dist = graph_dist_list[[s]][colnames(sce_sub), colnames(sce_sub)]
+  
+  print(s)
+  
+  # allsmooth_raw = sapply(as.character(unique(sce_sub$celltype_mapped_refined)), function(l) {
+  #   print(l)
+  #   smooth = weightedMeanMatrix(logcounts(sce_sub), graph_dist, sub = sce_sub$celltype_mapped_refined == l)
+  # }, simplify = FALSE)
+  # 
+  # allsmooth = do.call(cbind, allsmooth_raw)[,colnames(sce_sub)]
+  # 
+  # return(allsmooth)
+  # 
+  
+  sm = log2(1+smFISH[,intersect(colnames(sce_sub), colnames(smFISH))])
+  
+  allsmooth = weightedMeanMatrix(sm, graph_dist, sub = colnames(sm))
+  
+}, simplify = FALSE)
+
+smooth_sm = do.call(cbind, smoothlist_sm)[, intersect(colnames(sce), colnames(smFISH))]
+smooth_sm[is.na(smooth_sm)] <- NA
+
+# rownames(smooth_sm) <- paste0(rownames(smooth), "_neighbours")
+
+smooth_sm <- as.matrix(smooth_sm)
+
+# point impute the cells without any neighbours, with their
+# own expression values
+
+# smooth[is.na(smooth)] <- as.matrix(logcounts(sce))[is.na(smooth)]
+```
+
+
+```{r}
+all(query %in% colnames(smFISH))
+query_overlap = intersect(query, colnames(smFISH))
+query_overlap = intersect(query, colnames(smooth_sm))
+
+impcor = NULL
+# gene = "Dlx5"
+for (gene in rownames(smFISH)) {
+  print(gene)
+  if (!gene %in% rownames(imp[[1]])) next
+  impcor[[gene]] <- c(StabMap = cor(imp[[1]][gene, query_overlap], smooth_sm[gene, query_overlap], method = "spearman", use = "p"),
+                      PCA = cor(imp_PC[[1]][gene, query_overlap], smooth_sm[gene, query_overlap], method = "spearman", use = "p"))
+   # impcor[[gene]] <- c(StabMap = scHOT::weightedZISpearman(imp[[1]][gene,query_overlap], smFISH[gene, query_overlap]),
+   #                    PCA = scHOT::weightedZISpearman(imp_PC[[1]][gene, query_overlap], smFISH[gene, query_overlap]))
+}
+impcors = do.call(rbind, impcor)
+
+plot(rowMeans(logcounts(atlas))[rownames(impcors)], impcors[,"StabMap"])
+plot(impcors[,"PCA"], impcors[,"StabMap"], asp = 1); abline(c(0,1))
+# plot(impcors[rowMeans(logcounts(atlas))[rownames(impcors)] < 0.5, "PCA"],
+#      impcors[rowMeans(logcounts(atlas))[rownames(impcors)] < 0.5, "StabMap"], asp = 1); abline(c(0,1))
+```
+
+
+
+Between the PCA and StabMap embeddings, identify which cells have very different
+neighbourhoods.
+
+```{r}
+jac = embeddingJaccard(PC_corrected[colnames(seqFISH),],
+                       SC_corrected[colnames(seqFISH),], k1 = 100, k2 = 100)
+hist(jac)
+hist(log2(jac))
+
+df = data.frame(coord_x = meta[names(jac),"x_global_affine"],
+                coord_y = -meta[names(jac),"y_global_affine"],
+                jac = jac,
+                embryo = meta[names(jac), "embryo"])
+
+g = ggplot(df, aes(x = coord_x, y = coord_y)) +
+  geom_point(size = 0.2, aes(colour = jac)) +
+  theme_classic() +
+  scale_colour_gradient2(low = "black", mid = "white", high = "white",
+                         midpoint = max(df$jac)/2) +
+  coord_fixed() +
+  # labs(colour = gene) +
+  facet_wrap(~embryo) +
+  NULL
+
+g
+```
+
+Now compare neighbourhoods in space between PC and SC
+
+Just for embryo1 first
+
+```{r}
+seqFISH_cells = rownames(meta)[meta$embryo == "embryo1" & meta$celltype_mapped_refined == "Forebrain/Midbrain/Hindbrain"]
+
+jac_PC = embeddingJaccard(PC_corrected[seqFISH_cells,],
+                          meta[seqFISH_cells,c("x_global_affine", "y_global_affine")],
+                          k1 = 100, k2 = 50)
+hist(jac_PC)
+
+jac_SC = embeddingJaccard(SC_corrected[seqFISH_cells,],
+                          meta[seqFISH_cells,c("x_global_affine", "y_global_affine")],
+                          k1 = 100, k2 = 50)
+hist(jac_SC)
+
+table(sign(jac_SC - jac_PC))
+
+
+df = data.frame(coord_x = meta[names(jac_PC),"x_global_affine"],
+                coord_y = -meta[names(jac_PC),"y_global_affine"],
+                jac_PC = jac_PC,
+                jac_SC = jac_SC,
+                jac = jac[names(jac_PC)],
+                embryo = meta[names(jac_PC), "embryo"])
+
+g = ggplot(df, aes(x = coord_x, y = coord_y)) +
+  # geom_point(size = 0.2, aes(colour = jac)) +
+  theme_classic() +
+  scale_colour_gradient2(low = "black", mid = "white", high = "white",
+                         midpoint = max(df$jac)/2) +
+  coord_fixed() +
+  # labs(colour = gene) +
+  facet_wrap(~embryo) +
+  NULL
+
+g1 = g + geom_point(size = 0.2, aes(colour = jac_PC))
+g2 = g + geom_point(size = 0.2, aes(colour = jac_SC))
+g3 = g + geom_point(size = 0.2, aes(colour = jac))
+
+g + geom_point(size = 0.2, aes(colour = jac_SC - jac_PC)) + 
+  scale_colour_gradient2(low = "blue", mid = "grey", high = "red",
+                         midpoint = 0) +
+  NULL
+
+g1 + g2 + g3
+
+ggplot(df, aes(x = jac_PC, y = jac_SC)) +
+  # geom_point(size = 0.2, alpha = 0.1)+
+  geom_jitter(width = 0.01, aes(colour = jac)) +
+  theme_classic() +
+  scale_colour_gradient2(low = "black", mid = "grey", high = "grey",
+                         midpoint = max(df$jac)/2) +
+  coord_fixed() +
+  geom_abline(slope = 1, intercept = 0) +
+  # geom_smooth() +
+  # labs(colour = gene) +
+  # facet_wrap(~embryo) +
+  NULL
+
+
+ggplot(df, aes(x = cut(jac, 10), y = jac_SC)) +
+  # geom_point(size = 0.2, alpha = 0.1)+
+  # geom_jitter(width = 0.01, aes(colour = jac)) +
+  geom_boxplot() +
+  theme_classic() +
+  # scale_colour_gradient2(low = "black", mid = "grey", high = "grey",
+                         # midpoint = max(df$jac)/2) +
+  # coord_fixed() +
+  # geom_abline(slope = 1, intercept = 0) +
+  # geom_smooth() +
+  # labs(colour = gene) +
+  # facet_wrap(~embryo) +
+  ylim(range(c(df$jac_PC, df$jac_SC))) +
+  NULL +
+
+ggplot(df, aes(x = cut(jac, 10), y = jac_PC)) +
+  # geom_point(size = 0.2, alpha = 0.1)+
+  # geom_jitter(width = 0.01, aes(colour = jac)) +
+  geom_boxplot() +
+  theme_classic() +
+    ylim(range(c(df$jac_PC, df$jac_SC))) +
+  # scale_colour_gradient2(low = "black", mid = "grey", high = "grey",
+                         # midpoint = max(df$jac)/2) +
+  # coord_fixed() +
+  # geom_abline(slope = 1, intercept = 0) +
+  # geom_smooth() +
+  # labs(colour = gene) +
+  # facet_wrap(~embryo) +
+  NULL
+
+boxplot((df$jac_PC - df$jac_SC) ~ cut(df$jac, 10))
+abline(h = 0)
+```
+
+```{r}
+seqFISH_cells = colnames(seqFISH)
+atlas_cells = colnames(atlas)
+```
+
+
+
+
+# Calculate odds ratio of chimera cells to spatial embryo
+
+First need to identify centres for the testing.
+
+```{r}
+library(miloR)
+prop = 0.1
+k = 30
+X_reduced_dims = as.matrix(meta[V(graph)$name, c("x_global_affine", "y_global_affine"),])
+random_vertices <- miloR:::.sample_vertices(graph, prop, return.vertices = TRUE)
+sampled_vertices <- miloR:::.refined_sampling(random_vertices, X_reduced_dims, k)
+sampled_vertices <- unique(sampled_vertices)
+sampled_vertices_names = V(graph)$name[sampled_vertices]
+```
+
+Want to visualise a full-embryo odds ratio, so calculate this value for 
+every cell, not just the tested cells.
+
+```{r}
+chim_cells = c(colnames(Tal1chim), colnames(WTchim))
+
+
+chim_meta = rbind(cbind(cell = colnames(Tchim),
+                        colData(Tchim)[,c("tomato", "sample")],
+                        experiment = "Tchim"),
+                  cbind(cell = colnames(WTchim),
+                        colData(WTchim)[,c("tomato", "sample")],
+                        experiment = "WTchim"))
+rownames(chim_meta) <- chim_meta$cell
+
+chim_nearest = queryNamedKNN(SC_corrected[chim_cells, ],
+                             SC_corrected[seqFISH_cells, ],
+                             k = 100)
+
+chim_nearest_atlas = queryNamedKNN(SC_corrected[chim_cells, ],
+                                   SC_corrected[atlas_cells, ],
+                                   k = 100)
+
+logOR = NULL
+logOR_atlas = NULL
+
+# generate a vector of the log-odds-ratio
+# this is a bit slow
+for (i in seqFISH_cells) {
+  # for (i in atlas_cells) {
+  
+  print(i)
+  
+  neighbours = chim_nearest[i,]
+  chim_meta_sub = chim_meta[neighbours,]
+  # table(chim_meta_sub$tomato)
+  # table(chim_meta_sub$experiment)
+  # table(chim_meta_sub$sample)
+  # table(chim_meta_sub$tomato, chim_meta_sub$experiment)
+  # ftable(chim_meta_sub$sample, chim_meta_sub$tomato, chim_meta_sub$experiment)
+  
+  # calculate log odds ratio (ignoring sample information)
+  a = sum(chim_meta_sub$experiment == "WTchim" & chim_meta_sub$tomato)
+  b = sum(chim_meta_sub$experiment == "WTchim" & !chim_meta_sub$tomato)
+  c = sum(chim_meta_sub$experiment == "Tchim" & chim_meta_sub$tomato)
+  d = sum(chim_meta_sub$experiment == "Tchim" & !chim_meta_sub$tomato)
+  e = 0.5
+  
+  logOR[i] = log(((c + e)*(a+e))/((d + e)*(b + e)))
+}
+
+# fit = glm(, data = chim_meta_sub)
+
+df = data.frame(coord_x = meta[names(logOR),"x_global_affine"],
+                coord_y = -meta[names(logOR),"y_global_affine"],
+                logOR = logOR,
+                embryo = meta[names(logOR), "embryo"],
+                celltype = meta[names(logOR), "celltype_mapped_refined"])
+
+ggplot(df, aes(x = coord_x, y = coord_y, colour = logOR)) +
+  geom_point(size = 0.2) + 
+  theme_classic() +
+  scale_colour_gradient2(low = "blue", mid = "grey", high = "red",
+                         midpoint = 0) +
+  coord_fixed() +
+  facet_wrap(~embryo) +
+  # ggtitle("Imputed expression after StabMap") +
+  # labs(colour = "Dlx5") +
+  NULL
+
+ctype_order = names(sort(tapply(df$logOR, df$celltype, mean)))
+df$celltype <- factor(df$celltype, levels = ctype_order)
+
+ggplot(df, aes(x = celltype, y = logOR, fill = celltype)) +
+  # geom_point(size = 0.2) + 
+  theme_classic() +
+  geom_boxplot(aes(fill = celltype)) +
+  scale_fill_manual(values = celltype_colours) +
+  # scale_colour_gradient2(low = "blue", mid = "grey", high = "red",
+                         # midpoint = 0) +
+  coord_fixed() +
+  theme(legend.position = "none") +
+  geom_hline(yintercept = 0) +
+  # facet_wrap(~embryo) +
+  # ggtitle("Imputed expression after StabMap") +
+  # labs(colour = "Dlx5") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  NULL
+
+
+
+
+
+
+
+df_atlas = data.frame(
+  coord_x = reducedDim(atlas[,names(logOR_atlas)], "umap")[,1],
+  coord_y = reducedDim(atlas[,names(logOR_atlas)], "umap")[,2],
+  # coord_y = -meta[names(logOR),"y_global_affine"],
+  logOR = logOR_atlas,
+  # embryo = meta[names(logOR), "embryo"],
+  celltype = atlas[,names(logOR_atlas)]$celltype
+)
+
+ggplot(df_atlas, aes(x = coord_x, y = coord_y, colour = logOR)) +
+  geom_point(size = 0.2) + 
+  theme_classic() +
+  scale_colour_gradient2(low = "blue", mid = "grey", high = "red",
+                         midpoint = 0) +
+  coord_fixed() +
+  # facet_wrap(~embryo) +
+  # ggtitle("Imputed expression after StabMap") +
+  # labs(colour = "Dlx5") +
+  NULL
+
+ctype_order_atlas = names(sort(tapply(df_atlas$logOR, df_atlas$celltype, mean)))
+df_atlas$celltype <- factor(df_atlas$celltype, levels = ctype_order_atlas)
+
+ggplot(df_atlas, aes(x = celltype, y = logOR, fill = celltype)) +
+  # geom_point(size = 0.2) + 
+  theme_classic() +
+  geom_boxplot(aes(fill = celltype)) +
+  scale_fill_manual(values = celltype_colours) +
+  # scale_colour_gradient2(low = "blue", mid = "grey", high = "red",
+                         # midpoint = 0) +
+  coord_fixed() +
+  theme(legend.position = "none") +
+  geom_hline(yintercept = 0) +
+  # facet_wrap(~embryo) +
+  # ggtitle("Imputed expression after StabMap") +
+  # labs(colour = "Dlx5") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  NULL
+```
+
+
+
+Perform milo to identify regions that are well represented by seqFISH data
+
+```{r}
+library(miloR)
+
+# first make a joint SCE object
+joint_sce = SingleCellExperiment(
+  assays = list(counts = cbind(counts(atlas)[1:5,], seqFISH[1:5,])),
+  reducedDims = list("StabMap" = SC_corrected[c(atlas_cells, seqFISH_cells),],
+                     "StabMap_umap" = SC_corrected_umap[c(atlas_cells, seqFISH_cells),])
+)
+joint_sce$type <- ifelse(grepl("embryo", colnames(joint_sce)), "seqFISH", "atlas")
+joint_sce$sample <- c(atlas[,atlas_cells]$sample, meta[seqFISH_cells, "embryo"])
+joint_sce$celltype <- c(as.character(atlas[,atlas_cells]$celltype),
+                        as.character(meta[seqFISH_cells, "celltype_mapped_refined"]))
+
+embryo_milo = Milo(joint_sce)
+
+# build the knn
+embryo_milo <- buildGraph(embryo_milo, k = 30, d = 30, reduced.dim = "StabMap")
+
+# identify neighbourhoods
+embryo_milo <- makeNhoods(embryo_milo, prop = 0.1, k = 30, d=30, refined = TRUE, reduced_dims = "StabMap")
+
+plotNhoodSizeHist(embryo_milo)
+
+# count numbers of cells in the neihgbourhoods
+embryo_milo <- countCells(embryo_milo, meta.data = as.data.frame(colData(joint_sce)), sample="sample")
+
+# numbers of cells
+head(nhoodCounts(embryo_milo))
+
+embryo_design <- data.frame(colData(joint_sce))[,c("sample", "type")]
+
+embryo_design <- dplyr::distinct(embryo_design)
+rownames(embryo_design) <- embryo_design$sample
+
+embryo_design
+
+# neighbourhood connectivity (for spatial FDR) (slow)
+embryo_milo <- calcNhoodDistance(embryo_milo, d=30, reduced.dim = "StabMap")
+
+# testing
+da_results <- testNhoods(embryo_milo, design = ~ type, design.df = embryo_design)
+head(da_results)
+
+# inspect
+# da_results %>%
+#   arrange(SpatialFDR) %>%
+#   head() 
+
+ggplot(da_results, aes(PValue)) + geom_histogram(bins=50)
+
+ggplot(da_results, aes(logFC, -log10(SpatialFDR))) + 
+  geom_point() +
+  geom_hline(yintercept = 1) ##
+
+
+embryo_milo <- buildNhoodGraph(embryo_milo)
+
+## Plot single-cell UMAP
+umap_pl <- plotReducedDim(embryo_milo, dimred = "StabMap_umap", colour_by="type", text_by = "celltype", 
+                          text_size = 3, point_size=0.5) +
+  guides(fill="none")
+
+## Plot neighbourhood graph
+nh_graph_pl <- plotNhoodGraphDA(embryo_milo, da_results, layout="StabMap_umap",alpha=0.1) 
+  
+umap_pl + coord_fixed() + theme(legend.position = "bottom") +
+  nh_graph_pl + coord_fixed() + theme(legend.position = "bottom")
+
+da_results <- annotateNhoods(embryo_milo, da_results, coldata_col = "celltype")
+head(da_results)
+
+
+ggplot(da_results, aes(celltype_fraction)) + geom_histogram(bins=50)
+
+da_results$celltype <- ifelse(da_results$celltype_fraction < 0.5, "Mixed", da_results$celltype)
+
+plotDAbeeswarm(da_results, group.by = "celltype")
+```
+
+
+
+
+Finish
+
+```{r}
+sessionInfo()
+```

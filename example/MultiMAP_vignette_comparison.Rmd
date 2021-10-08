@@ -1,0 +1,140 @@
+---
+title: "MultiMAP tutorial example"
+author: "Shila Ghazanfar"
+date: "01/06/2021"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+```{r}
+source("../scripts/initialise.R")
+library(zellkonverter)
+library(SingleCellExperiment)
+```
+
+# Load MultiMAP example data
+
+Downloaded and placed in local directory structure as h5ad files
+
+```{r}
+rna_filename = "../../MultiMAP/example/multimap-data/rna.h5ad"
+rna_raw = zellkonverter::readH5AD(rna_filename, reader = "R")
+rownames(rna_raw) <- rowData(rna_raw)$row_names
+
+atac_genes_filename = "../../MultiMAP/example/multimap-data/atac-genes.h5ad"
+atac_genes_raw = zellkonverter::readH5AD(atac_genes_filename, reader = "R")
+rownames(atac_genes_raw) <- rowData(atac_genes_raw)$row_names
+
+atac_peaks_filename = "../../MultiMAP/example/multimap-data/atac-peaks.h5ad"
+atac_peaks_raw = zellkonverter::readH5AD(atac_peaks_filename, reader = "R")
+rownames(atac_peaks_raw) <- rowData(atac_peaks_raw)$row_names
+```
+
+Process into assay list
+
+```{r}
+identical(colnames(atac_genes_raw), colnames(atac_peaks_raw))
+plotFeatureOverlaps(list(rna = rna_raw, atac_genes = atac_genes_raw, atac_peaks = atac_peaks_raw))
+
+assay_list = list(rna = assay(rna_raw, "X"),
+                  atac = rbind(assay(atac_genes_raw, "X"),
+                               assay(atac_peaks_raw, "X"))
+)
+```
+
+# Integrate with MultiMAP
+
+```{r}
+out_m = MultiMAP_wrap(assay_list)
+dim(out_m)
+
+out_m_umap = calculateUMAP_rnames(out_m)
+plot(out_m_umap, col = ifelse(rownames(out_m_umap) %in% colnames(rna_raw), "blue", "orange"))
+plot(out_m_umap, col = ifelse(rownames(out_m_umap) %in% colnames(rna_raw), "blue", "orange"))
+```
+
+
+# Integrate with StabMap
+
+```{r}
+type = ifelse(Reduce(union, lapply(assay_list, colnames)) %in% colnames(rna_raw),
+              "RNA", "ATAC")
+names(type) <- Reduce(union, lapply(assay_list, colnames)) 
+
+celltypes = c(rna_raw$cell_type, atac_genes_raw$cell_type)
+names(celltypes) <- c(colnames(rna_raw), colnames(atac_genes_raw))
+
+nPCs = 50
+
+StabMap_embedding = stabMapGeneralised(assay_list,
+                                      reference_list = "rna",
+                                      ncomponentsReference = nPCs,
+                                      ncomponentsSubset = nPCs,
+                                      projectAll = TRUE,
+                                      plot = TRUE,
+                                      scale.center = FALSE,
+                                      scale.scale = FALSE)
+dim(StabMap_embedding)
+
+StabMap_embedding_corrected = reducedMNN_batchFactor(StabMap_embedding,
+                                                     type)
+
+StabMap_umap = calculateUMAP_rnames(StabMap_embedding_corrected)
+plot(StabMap_umap, col = ifelse(rownames(StabMap_umap) %in% colnames(rna_raw), "blue", "orange"))
+```
+
+Plot and compare
+
+```{r}
+df = data.frame(
+  StabMap_UMAP1 = StabMap_umap[,1],
+  StabMap_UMAP2 = StabMap_umap[,2],
+  type = type[rownames(StabMap_umap)],
+  celltype = celltypes[rownames(StabMap_umap)],
+  MultiMAP_UMAP1 = out_m_umap[rownames(StabMap_umap),1],
+  MultiMAP_UMAP2 = out_m_umap[rownames(StabMap_umap),2]
+)
+df <- df[sample(nrow(df)),]
+
+
+
+g1 = ggplot(df) +
+  geom_point(aes(x = StabMap_UMAP1, y = StabMap_UMAP2, colour = type), size = 0.5, alpha = 0.5) + 
+  theme_classic()
+
+g2 = ggplot(df) +
+  geom_point(aes(x = MultiMAP_UMAP1, y = MultiMAP_UMAP2, colour = type), size = 0.5, alpha = 0.5) + 
+  theme_classic()
+
+g3 = ggplot(df) +
+  geom_point(aes(x = StabMap_UMAP1, y = StabMap_UMAP2, colour = celltype), size = 0.5, alpha = 0.5) + 
+  theme_classic()
+
+g4 = ggplot(df) +
+  geom_point(aes(x = MultiMAP_UMAP1, y = MultiMAP_UMAP2, colour = celltype), size = 0.5, alpha = 0.5) + 
+  theme_classic()
+
+g1 + g3 + g2 + g4 + plot_layout(nrow = 2, ncol = 2)
+```
+
+Finish
+
+```{r}
+sessionInfo
+```
