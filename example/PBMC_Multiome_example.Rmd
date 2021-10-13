@@ -666,6 +666,26 @@ if (FALSE) { # can only be run interactively
 }
 ```
 
+```{r}
+assay_list = mockMosaicData(names = c("RNA", "ATAC"),
+                            ncells = c(50,50),
+                            ngenes = list(1:10, 6:15))
+
+mdt = mosaicDataTopology(assay_list)
+V(mdt)$size = 60
+V(mdt)$color = method_colours["StabMap"]
+V(mdt)$label.color = "white"
+V(mdt)$frame.color = "darkgrey"
+V(mdt)$label.family = "sans"
+plot(mdt)
+
+pdf("../../Figures/raw/PBMC_Multiome_mdt.pdf", height = 4, width = 4)
+par(mar = c(1,1,1,1))
+print(plot(mdt))
+dev.off()
+```
+
+
 # Finish
 
 ```{r}

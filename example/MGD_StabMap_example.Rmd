@@ -377,11 +377,34 @@ g = ggplot(subset(res2, type %in% typesToKeep), aes(x = factor(genes), y = Accur
   theme_classic() +
   geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
   scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
+  theme(legend.position = "none") +
   NULL
 print(g)
 
 ggsave(g, file = "../../Figures/raw/MGD_accuracy_barplots.pdf", height = 6, width = 10)
 ```
+
+Generate a network graph for illustration
+
+```{r}
+assay_list = mockMosaicData(names = c("Reference", "Query"),
+                            ncells = c(50,50),
+                            ngenes = list(1:10, 6:15))
+
+mdt = mosaicDataTopology(assay_list)
+V(mdt)$size = 60
+V(mdt)$color = method_colours["StabMap"]
+V(mdt)$label.color = "white"
+V(mdt)$frame.color = "darkgrey"
+V(mdt)$label.family = "sans"
+plot(mdt)
+
+pdf("../../Figures/raw/MGD_mdt.pdf", height = 4, width = 4)
+par(mar = c(1,1,1,1))
+print(plot(mdt))
+dev.off()
+```
+
 
 Finish
 
