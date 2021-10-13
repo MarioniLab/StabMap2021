@@ -1,7 +1,7 @@
 ---
 title: "MultiMAP tutorial example"
 author: "Shila Ghazanfar"
-date: "01/06/2021"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
        html_document:
                      toc: true
@@ -50,7 +50,7 @@ Process into assay list
 
 ```{r}
 identical(colnames(atac_genes_raw), colnames(atac_peaks_raw))
-plotFeatureOverlaps(list(rna = rna_raw, atac_genes = atac_genes_raw, atac_peaks = atac_peaks_raw))
+mosaicDataUpSet(list(rna = rna_raw, atac_genes = atac_genes_raw, atac_peaks = atac_peaks_raw))
 
 assay_list = list(rna = assay(rna_raw, "X"),
                   atac = rbind(assay(atac_genes_raw, "X"),
@@ -60,6 +60,8 @@ assay_list = list(rna = assay(rna_raw, "X"),
 
 # Integrate with MultiMAP
 
+To be compared with the vignette found [online](https://nbviewer.org/github/Teichlab/MultiMAP/blob/master/examples/tutorial.ipynb).
+
 ```{r}
 out_m = MultiMAP_wrap(assay_list)
 dim(out_m)
@@ -68,7 +70,6 @@ out_m_umap = calculateUMAP_rnames(out_m)
 plot(out_m_umap, col = ifelse(rownames(out_m_umap) %in% colnames(rna_raw), "blue", "orange"))
 plot(out_m_umap, col = ifelse(rownames(out_m_umap) %in% colnames(rna_raw), "blue", "orange"))
 ```
-
 
 # Integrate with StabMap
 
@@ -82,14 +83,14 @@ names(celltypes) <- c(colnames(rna_raw), colnames(atac_genes_raw))
 
 nPCs = 50
 
-StabMap_embedding = stabMapGeneralised(assay_list,
-                                      reference_list = "rna",
-                                      ncomponentsReference = nPCs,
-                                      ncomponentsSubset = nPCs,
-                                      projectAll = TRUE,
-                                      plot = TRUE,
-                                      scale.center = FALSE,
-                                      scale.scale = FALSE)
+StabMap_embedding = stabMap(assay_list,
+                            reference_list = "rna",
+                            ncomponentsReference = nPCs,
+                            ncomponentsSubset = nPCs,
+                            projectAll = TRUE,
+                            plot = TRUE,
+                            scale.center = FALSE,
+                            scale.scale = FALSE)
 dim(StabMap_embedding)
 
 StabMap_embedding_corrected = reducedMNN_batchFactor(StabMap_embedding,
@@ -111,8 +112,6 @@ df = data.frame(
   MultiMAP_UMAP2 = out_m_umap[rownames(StabMap_umap),2]
 )
 df <- df[sample(nrow(df)),]
-
-
 
 g1 = ggplot(df) +
   geom_point(aes(x = StabMap_UMAP1, y = StabMap_UMAP2, colour = type), size = 0.5, alpha = 0.5) + 
@@ -136,5 +135,5 @@ g1 + g3 + g2 + g4 + plot_layout(nrow = 2, ncol = 2)
 Finish
 
 ```{r}
-sessionInfo
+sessionInfo()
 ```
