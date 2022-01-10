@@ -305,6 +305,8 @@ maxfdr = max(subset(seqFISH_meta, chimera_glm_fdr < 0.05)$chimera_glm_pval)
 seqFISH_meta$chimera_glm_dir = factor(ifelse(seqFISH_meta$chimera_glm_fdr < 0.05,
                                              ifelse(sign(seqFISH_meta$chimera_glm_coef) == 1, "up", "down"),
                                              "n.s."))
+
+table(seqFISH_meta$celltype_mapped_refined, seqFISH_meta$chimera_glm_dir)
 ```
 
 
@@ -621,6 +623,14 @@ lm_out = as.data.frame(do.call(rbind,lapply(data_split, function(dat) {
 lm_out$celltype_mapped_refined <- rownames(lm_out)
 
 print(lm_out)
+
+# calculate spearman correlation per embryo
+AP_cort = lapply(split.data.frame(seqFISH_meta_spl, seqFISH_meta_spl$embryo), function(dat){
+  cort = cor.test(dat$chimera_glm_coef, dat$AP_rank, method = "spearman")
+  return(cort)
+})
+print(AP_cort)
+sort(unlist(lapply(AP_cort, "[", "estimate")))
 ```
 
 # Assess gene expression changes along the A-P for cranial mesoderm
