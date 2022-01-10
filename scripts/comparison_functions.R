@@ -153,6 +153,10 @@ MultiMAP_wrap = function(assay_list, verbose = FALSE) {
   # requires Python 3.8 (for a compatible version of numba)
   require(reticulate)
   
+  # to view version:
+  # py_run_string("from importlib.metadata import version")
+  # py_run_string("print(version('MultiMAP'))")
+
   py_run_string("import scanpy as sc")
   py_run_string("import anndata")
   py_run_string("import MultiMAP")

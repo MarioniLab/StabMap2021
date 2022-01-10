@@ -353,7 +353,7 @@ getBestColumn = function(E,
 
 # core functions from Jonny 2019 paper
 getHVGs = function(sce, min.mean = 1e-3){
-  require(biomaRt)
+  # require(biomaRt)
   decomp = modelGeneVar(assay(sce, "logcounts"), block = sce$sample, span = 0.05)
   decomp = decomp[decomp$mean > min.mean,]
   
