@@ -1,0 +1,135 @@
+---
+title: "StabMap: Generate Mouse Gastrulation seqFISH with neighbourhood expression object"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+source("../scripts/initialise.R")
+library(igraph)
+library(gtools)
+```
+
+Load scripts from MarioniLab/SpatialMouseAtlas2020 Github repository.
+
+```{r, include=FALSE}
+library(httr)
+req <- GET("https://api.github.com/repos/MarioniLab/SpatialMouseAtlas2020/git/trees/main?recursive=1")
+stop_for_status(req)
+filelist <- unlist(lapply(content(req)$tree, "[", "path"), use.names = F)
+suffixes = grep("functions/", filelist, value = TRUE, fixed = TRUE)
+
+urls = paste0("https://raw.githubusercontent.com/MarioniLab/SpatialMouseAtlas2020/main/", suffixes)
+
+source_https <- function(url, ...) {
+  # load package
+  require(RCurl)
+  # parse and evaluate each .R script
+  sapply(c(url, ...), function(u) {
+    eval(parse(text = getURL(u, followlocation = TRUE, cainfo = system.file("CurlSSL", "cacert.pem", package = "RCurl"))), envir = .GlobalEnv)
+  })
+}
+
+sapply(urls, source_https)
+source_https(paste0("https://raw.githubusercontent.com/MarioniLab/SpatialMouseAtlas2020/main/scripts/celltype_colours.R"))
+```
+
+# Load seqFISH data
+
+Downloaded from the data content server. 
+
+```{r}
+meta = readRDS("../../LohoffSeqFISH/metadata.Rds")
+exprs = readRDS("../../LohoffSeqFISH/exprs.Rds")
+graph = readRDS("../../LohoffSeqFISH/neighbourGraph_1.3.Rds")
+
+sce = SingleCellExperiment(assays = list(logcounts = exprs),
+                           colData = meta)
+```
+
+# Calculate neighbourhood expression of seqFISH cells
+
+```{r}
+sceSplit = splitSCE(sce, interaction(sce$embryo, sce$z))
+
+graph_dist_list = lapply(sceSplit, function(sce_sub) {
+  
+  # subset to relevant cells
+  graph_sub = induced.subgraph(graph, V(graph)$name %in% colnames(sce_sub))
+  
+  # add the remaining cells as unconnected nodes in the graph
+  graph_sub = igraph::add.vertices(graph_sub, length(setdiff(colnames(sce_sub), V(graph_sub)$name)), 
+                                   attr = list(name = setdiff(colnames(sce_sub), V(graph_sub)$name)))
+  
+  graph_dist = igraph::distances(graph_sub, mode = "all")
+  
+  # setting diag() to Inf means that the cell itself is not included in the 
+  # weighted mean calculation
+  # if instead I set it to 1, then itself is included in the calculation
+  diag(graph_dist) <- Inf
+  graph_dist[1:5,1:5]
+  return(graph_dist)
+})
+
+# get smoothed expression
+smoothlist = sapply(names(sceSplit), function(s) {
+  sce_sub = sceSplit[[s]]
+  graph_dist = graph_dist_list[[s]][colnames(sce_sub), colnames(sce_sub)]
+  
+  print(s)
+  
+  # only mean of 2-step neighbours, not including self either
+  # (based on above setting diag to Inf)
+  graph_dist[graph_dist > 2] <- Inf
+  
+  allsmooth = weightedMeanMatrix(logcounts(sce_sub), graph_dist)
+  
+}, simplify = FALSE)
+
+smooth = do.call(cbind, smoothlist)[, colnames(sce)]
+smooth[is.na(smooth)] <- NA
+
+rownames(smooth) <- paste0(rownames(smooth), "_neighbours")
+
+smooth <- as.matrix(smooth)
+
+# point impute the cells without any neighbours, with their
+# own expression values
+smooth[is.na(smooth)] <- as.matrix(logcounts(sce))[is.na(smooth)]
+```
+
+Combine cellular and neighbourhood data into one.
+
+```{r}
+seqFISH = SingleCellExperiment(assays = list(
+  logcounts = rbind(logcounts(sce), smooth)),
+  colData = meta)
+
+saveRDS(seqFISH, file = "../../LohoffSeqFISH/seqFISH_smooth.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```

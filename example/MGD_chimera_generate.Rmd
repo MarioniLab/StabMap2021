@@ -1,0 +1,115 @@
+---
+title: "StabMap: Generate Mouse Gastrulation and Chimera SCE object"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(MouseGastrulationData)
+source("../scripts/initialise.R")
+```
+
+Load data via the MouseGastrulationData Bioconductor package.
+
+```{r}
+stages = c("E8.5")
+
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt[mt[, "stage"] %in% stages, "sample"]
+
+atlas_raw = EmbryoAtlasData(type = "processed", samples = samples)
+atlas_raw <- logNormCounts(atlas_raw)
+
+# based on reading the descriptions
+# load chimera data
+
+wt_samples = c(5,6,7,8,9,10)
+t_samples = c(1,2,5,6,7,8,9,10)
+
+wt_chim_raw = MouseGastrulationData::WTChimeraData(
+  type = "processed",
+  samples = wt_samples
+)
+wt_chim_raw = logNormCounts(wt_chim_raw)
+
+t_chim_raw = MouseGastrulationData::TChimeraData(
+  type = "processed",
+  samples = t_samples
+)
+t_chim_raw = logNormCounts(t_chim_raw)
+
+# generate a joint SCE with all three datasets
+scrna_cells = c(paste0("atlas_", colnames(atlas_raw)),
+                paste0("wt_chim_", colnames(wt_chim_raw)),
+                paste0("t_chim_", colnames(t_chim_raw)))
+
+scrna_sample = c(paste0("atlas_", atlas_raw$sample),
+                paste0("wt_chim_", wt_chim_raw$sample),
+                paste0("t_chim_", t_chim_raw$sample))
+
+scrna_celltype = c(atlas_raw$celltype,
+                   wt_chim_raw$celltype.mapped,
+                   t_chim_raw$celltype.mapped)
+
+scrna_experiment = c(rep("atlas", ncol(atlas_raw)),
+                     rep("wt_chim", ncol(wt_chim_raw)),
+                     rep("t_chim", ncol(t_chim_raw)))
+
+scrna_tomato = c(rep(NA, ncol(atlas_raw)),
+                 wt_chim_raw$tomato,
+                 t_chim_raw$tomato)
+
+scrna_cData = data.frame(
+  cell = scrna_cells,
+  sample = scrna_sample,
+  celltype = scrna_celltype,
+  experiment = scrna_experiment,
+  tomato = scrna_tomato
+)
+
+celltype_colours_atlas = MouseGastrulationData::EmbryoCelltypeColours
+
+ct_all = scrna_cData$celltype
+names(ct_all) <- scrna_cData$cell
+
+scrna_exprs = cbind(
+  rbind(logcounts(atlas_raw), "tomato-td" = 0),
+  logcounts(wt_chim_raw),
+  logcounts(t_chim_raw)
+)
+colnames(scrna_exprs) <- scrna_cData$cell
+
+scrna = SingleCellExperiment(assays = list(logcounts = scrna_exprs),
+                             colData = scrna_cData,
+                             rowData = rowData(wt_chim_raw))
+
+# save the object as RDS
+saveRDS(scrna, file = "../../MouseGastrulationData/MGD_chimera_scrna.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```
+

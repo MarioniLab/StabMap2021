@@ -1,0 +1,200 @@
+---
+title: "StabMap: Mouse Gastrulation chimera and Spatial Mouse Atlas"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+source("../scripts/initialise.R")
+library(gtools)
+source("../../LohoffSeqFISH/celltype_colours.R")
+```
+
+Load scRNA-seq data SCE object.
+
+```{r}
+scrna = readRDS("../../MouseGastrulationData/MGD_chimera_scrna.Rds")
+scrna
+```
+
+Perform feature selection on these.
+
+```{r}
+# Feature selection
+decomp <- modelGeneVar(scrna, block = scrna$sample)
+plot(decomp$mean, decomp$total)
+hvgs <- rownames(decomp)[decomp$mean>0.01 & decomp$p.value <= 0.05]
+points(decomp[hvgs,]$mean, decomp[hvgs,]$total, col = "blue")
+length(hvgs)
+scrna <- scrna[hvgs,]
+
+rownames(scrna) <- make.unique(rowData(scrna)$SYMBOL)
+```
+
+Load seqFISH and smoothed expression data SCE object.
+
+```{r}
+seqFISH = readRDS("../../LohoffSeqFISH/seqFISH_smooth.Rds")
+seqFISH
+```
+
+Integrate seqFISH and scRNA-seq only using StabMap and PCA.
+
+```{r}
+assay_list = list(
+  seqFISH = as.matrix(logcounts(seqFISH)),
+  scrna = as.matrix(logcounts(scrna))
+)
+
+mosaicDataUpSet(assay_list)
+plot(mosaicDataTopology(assay_list))
+
+meta <- colData(seqFISH)
+
+SC_coord = setNames(c(meta[,"embryo"], rep("scrna", ncol(scrna))),
+                    c(rownames(meta), colnames(scrna)))
+table(SC_coord)
+
+SC_coord_z = setNames(c(interaction(meta[,"embryo"], meta[,"z"]), rep("scrna", ncol(scrna))),
+                    c(rownames(meta), colnames(scrna)))
+table(SC_coord_z)
+
+SC_sample = setNames(c(meta[,"embryo"], scrna$sample),
+                    c(rownames(meta), colnames(scrna)))
+
+SC_batch = setNames(c(as.character(meta$embryo_pos_z), scrna$sample),
+                    c(rownames(meta), colnames(scrna)))
+table(SC_batch)
+
+SC_type = setNames(c(rep("seqFISH", nrow(meta)), rep("scrna", ncol(scrna))),
+                   c(rownames(meta), colnames(scrna)))
+table(SC_type)
+
+cols = setNames(c(celltype_colours[as.character(meta[,"celltype_mapped_refined"])],
+                  celltype_colours[as.character(scrna$celltype)]),
+                c(rownames(meta), colnames(scrna))
+)
+
+celltypes = setNames(c(as.character(meta[,"celltype_mapped_refined"]),
+                       as.character(scrna$celltype)),
+                     c(rownames(meta), colnames(scrna))
+)
+```
+
+Identify the batch correction ordering.
+
+```{r}
+batches_unsorted = unique(SC_batch)
+batches_sorted = c(mixedsort(grep("atlas", batches_unsorted, value = TRUE)),
+                   mixedsort(grep("wt_chim", batches_unsorted, value = TRUE)),
+                   mixedsort(grep("^t_chim", batches_unsorted, value = TRUE)),
+                   mixedsort(grep("embryo", batches_unsorted, value = TRUE))
+                   )
+batches_order = match(batches_sorted, batches_unsorted)
+```
+
+Perform naive PCA integration and batch correction using MNN.
+
+```{r}
+PC = mapPCA(assay_list)
+colnames(PC) <- paste0("joint_PC", seq_len(ncol(PC)))
+PC_corrected = reducedMNN_batchFactor(PC, SC_batch, merge.order = batches_order)
+PC_corrected_umap = calculateUMAP_rnames(PC_corrected)
+
+plot(PC_corrected_umap, asp = 1)
+```
+
+Perform StabMap and batch correction using MNN.
+
+```{r}
+SC_out = stabMap(assay_list,
+                 reference_list = c("scrna", "seqFISH"),
+                 projectAll = TRUE,
+                 plot = FALSE,
+                 scale.center = TRUE,
+                 scale.scale = TRUE)
+
+SC = reWeightEmbedding(SC_out, 
+                       weights = list("seqFISH_PC" = 1,
+                                      "scrna_PC" = 1
+                       ))
+
+SC_corrected = reducedMNN_batchFactor(SC, SC_batch, merge.order = batches_order)
+SC_corrected_umap = calculateUMAP_rnames(SC_corrected)
+
+plot(SC_corrected_umap, asp = 1)
+```
+
+```{r}
+# coord_x = setNames(c(meta[,"x_global_affine"],
+#                      reducedDim(scrna, "umap")[,1]),
+#                    c(rownames(meta), colnames(scrna))
+#                    )
+# 
+# coord_y = setNames(c(-meta[,"y_global_affine"],
+#                      reducedDim(scrna, "umap")[,2]),
+#                    c(rownames(meta), colnames(scrna))
+#                    )
+
+coord_x = setNames(c(meta[,"x_global_affine"],
+                     rep(NA, ncol(scrna))),
+                   c(rownames(meta), colnames(scrna))
+                   )
+
+coord_y = setNames(c(-meta[,"y_global_affine"],
+                       rep(NA, ncol(scrna))),
+                   c(rownames(meta), colnames(scrna))
+                   )
+```
+
+Generate output files.
+
+```{r}
+SC_corrected_list = list(
+  StabMap_uncorrected = SC,
+  StabMap_corrected = SC_corrected,
+  StabMap_umap = SC_corrected_umap,
+  StabMap_meta = data.frame(cell = rownames(SC_corrected_umap),
+                            sample = SC_coord[rownames(SC_corrected_umap)],
+                            sample_z = SC_coord_z[rownames(SC_corrected_umap)],
+                            batch = SC_batch[rownames(SC_corrected_umap)],
+                            type = SC_type[rownames(SC_corrected_umap)],
+                            celltype = celltypes[rownames(SC_corrected_umap)],
+                            colour = cols[rownames(SC_corrected_umap)],
+                            coord_x = coord_x[rownames(SC_corrected_umap)],
+                            coord_y = coord_y[rownames(SC_corrected_umap)]),
+  PC_uncorrected = PC,
+  PC_corrected = PC_corrected,
+  PC_umap = PC_corrected_umap,
+  scrna_meta = colData(scrna),
+  seqFISH_meta = colData(seqFISH)
+)
+saveRDS(SC_corrected_list, file = "../../output/MGA_chimera_seqFISH_StabMap_list.Rds")
+# saveRDS(assay_list, file = "../../output/MGA_chimera_seqFISH_StabMap_assay_list.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,736 @@
+---
+title: "StabMap: Mouse Gastrulation chimera and Spatial Mouse Atlas - downstream"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = TRUE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+source("../scripts/initialise.R")
+```
+
+```{r}
+library(igraph)
+library(scattermore)
+library(ggpubr)
+library(ggiraph)
+library(cowplot)
+library(ggrepel)
+library(princurve)
+```
+
+```{r, include=FALSE}
+library(httr)
+req <- GET("https://api.github.com/repos/MarioniLab/SpatialMouseAtlas2020/git/trees/main?recursive=1")
+stop_for_status(req)
+filelist <- unlist(lapply(content(req)$tree, "[", "path"), use.names = F)
+suffixes = grep("functions/", filelist, value = TRUE, fixed = TRUE)
+
+urls = paste0("https://raw.githubusercontent.com/MarioniLab/SpatialMouseAtlas2020/main/", suffixes)
+
+source_https <- function(url, ...) {
+  # load package
+  require(RCurl)
+  # parse and evaluate each .R script
+  sapply(c(url, ...), function(u) {
+    eval(parse(text = getURL(u, followlocation = TRUE, cainfo = system.file("CurlSSL", "cacert.pem", package = "RCurl"))), envir = .GlobalEnv)
+  })
+}
+
+sapply(urls, source_https)
+source_https(paste0("https://raw.githubusercontent.com/MarioniLab/SpatialMouseAtlas2020/main/scripts/celltype_colours.R"))
+```
+
+Load PCA and StabMap output
+
+```{r}
+out = readRDS("../../output/MGA_chimera_seqFISH_StabMap_list.Rds")
+list2env(out, envir = .GlobalEnv)
+assay_list = readRDS("../../output/MGA_seqFISH_StabMap_assay_list.Rds")
+```
+
+Add UMAP coords to the metadata
+
+```{r}
+StabMap_meta$StabMap_UMAP1 = StabMap_umap[,1]
+StabMap_meta$StabMap_UMAP2 = StabMap_umap[,2]
+
+seqFISH_meta$StabMap_UMAP1 = StabMap_umap[rownames(seqFISH_meta),1]
+seqFISH_meta$StabMap_UMAP2 = StabMap_umap[rownames(seqFISH_meta),2]
+
+StabMap_meta$PC_UMAP1 = PC_umap[,1]
+StabMap_meta$PC_UMAP2 = PC_umap[,2]
+
+seqFISH_meta$PC_UMAP1 = PC_umap[rownames(seqFISH_meta),1]
+seqFISH_meta$PC_UMAP2 = PC_umap[rownames(seqFISH_meta),2]
+
+seqFISH_meta <- as.data.frame(seqFISH_meta)
+```
+
+# rename cell types using common annotations
+
+```{r}
+StabMap_meta$celltype[StabMap_meta$celltype %in% c("Erythroid1", "Erythroid2", "Erythroid3")] <- "Erythroid"
+StabMap_meta$celltype[StabMap_meta$celltype %in% c("Blood progenitors 1", "Blood progenitors 2")] <- "Blood progenitors"
+StabMap_meta$celltype[StabMap_meta$celltype %in% c("ExE mesoderm")] <- "Lateral plate mesoderm"
+StabMap_meta$celltype[StabMap_meta$celltype %in% c("Gut")] <- "Gut tube"
+StabMap_meta$celltype[StabMap_meta$celltype %in% c("Pharyngeal mesoderm")] <- "Splanchnic mesoderm"
+StabMap_meta$celltype[StabMap_meta$celltype %in% c("Mesenchyme")] <- "Mixed mesenchymal mesoderm"
+StabMap_meta$celltype[StabMap_meta$celltype %in% c("Def. endoderm")] <- "Definitive endoderm"
+StabMap_meta$celltype_broad <- StabMap_meta$celltype
+StabMap_meta$celltype_broad[StabMap_meta$celltype_broad %in% c("Cranial mesoderm", "Anterior somitic tissues", "Sclerotome", "Dermomyotome")] <- "Paraxial mesoderm"
+StabMap_meta$celltype_broad[StabMap_meta$celltype_broad %in% c("Posterior somitic tissues", "Presomitic mesoderm")] <- "Somitic mesoderm"
+```
+
+```{r}
+table(StabMap_meta$celltype_broad, StabMap_meta$type)
+modality_colours = nord(palette = "algoma_forest", 5)[c(1,3)]
+names(modality_colours) = c("scrna", "seqFISH")
+```
+
+```{r}
+g0 = ggplot(StabMap_meta[sample(rownames(StabMap_meta)),],
+            aes(x = StabMap_UMAP1, y = StabMap_UMAP2)) + 
+  geom_scattermore(aes(colour = celltype_broad), pointsize = 2.3, alpha = 0.1) + 
+  scale_colour_manual(values = celltype_colours) + 
+  theme_classic() +
+  coord_fixed() +
+  theme(legend.position = "none") +
+  theme(axis.text = element_blank()) + 
+  theme(axis.title = element_text(size = 20)) + 
+  theme(axis.ticks = element_blank()) +
+  xlab("StabMap UMAP1") +
+  ylab("StabMap UMAP2") +
+  NULL
+g0
+
+ggsave(g0, file = "../../Figures/raw/chimera_seqFISH_stabmap_celltypes.pdf",
+       height = 6, width = 6)
+
+g0_leg = as_ggplot(get_legend(g0 + theme(legend.position = "bottom") +
+                                guides(colour = guide_legend(title = "",
+                                                             ncol = 6,
+                                                             override.aes = list(size = 6, alpha = 1)))))
+g0_leg
+ggsave(g0_leg, file = paste0("../../Figures/raw/chimera_seqFISH_stabmap_celltypes_leg.pdf"), height = 3, width = 12)
+
+g0.1 = ggplot(StabMap_meta[sample(rownames(StabMap_meta)),],
+              aes(x = StabMap_UMAP1, y = StabMap_UMAP2)) + 
+  geom_scattermore(aes(colour = type), pointsize = 2.3, alpha = 0.1) + 
+  scale_colour_manual(values = modality_colours, labels = c("scRNA-seq", "seqFISH")) +
+  theme_classic() +
+  coord_fixed() +
+  theme(legend.position = "none") +
+  theme(axis.text = element_blank()) + 
+  theme(axis.title = element_text(size = 20)) + 
+  theme(axis.ticks = element_blank()) +
+  xlab("StabMap UMAP1") +
+  ylab("StabMap UMAP2") +
+  NULL
+g0.1
+ggsave(g0.1, file = "../../Figures/raw/chimera_seqFISH_stabmap_type.pdf",
+       height = 6, width = 6)
+
+g0.1_leg = as_ggplot(get_legend(g0.1 + theme(legend.position = "bottom") +
+                                  guides(colour = guide_legend(title = "",
+                                                               ncol = 5,
+                                                               override.aes = list(size = 6, alpha = 1)))))
+ggsave(g0.1_leg, file = paste0("../../Figures/raw/chimera_seqFISH_stabmap_type_leg.pdf"), height = 1, width = 3)
+```
+
+# Chimera abundance testing
+
+Use the StabMap space to perform differential abundance testing with the 
+T chimera, including comparison to the WT/WT chimera. Use the sample information
+to incorporate pool replication for these.
+
+Code in the pooling information
+
+```{r}
+scrna_meta$pool = NA
+scrna_meta[scrna_meta$sample %in% c("t_chim_1", "t_chim_2"), "pool"] <- "t_chim_pool_1"
+scrna_meta[scrna_meta$sample %in% c("t_chim_5", "t_chim_6"), "pool"] <- "t_chim_pool_3"
+scrna_meta[scrna_meta$sample %in% c("t_chim_7", "t_chim_8"), "pool"] <- "t_chim_pool_4"
+scrna_meta[scrna_meta$sample %in% c("t_chim_9", "t_chim_10"), "pool"] <- "t_chim_pool_5"
+
+scrna_meta[scrna_meta$sample %in% c("wt_chim_5", "wt_chim_6"), "pool"] <- "wt_chim_pool_3"
+scrna_meta[scrna_meta$sample %in% c("wt_chim_7", "wt_chim_8"), "pool"] <- "wt_chim_pool_4"
+scrna_meta[scrna_meta$sample %in% c("wt_chim_9", "wt_chim_10"), "pool"] <- "wt_chim_pool_5"
+```
+
+```{r, eval = FALSE}
+# some testing
+pvals_noglobal = c()
+pvals_global = c()
+coefs_global = c()
+
+plot = FALSE
+
+for (i in 1:500) {
+  
+  print(i)
+  
+  cells = sample(subset(out$scrna_meta, experiment %in% c("wt_chim", "t_chim"))$cell)[1:1000]
+  
+  globaltab = unclass(table(scrna_meta[, "pool"], scrna_meta[, "tomato"]))
+  globalprop = prop.table(globaltab, 1)[,2]
+  globalpropfactor = prop.table(globaltab, 1)*2
+  
+  tab = unclass(table(scrna_meta[cells, "pool"], scrna_meta[cells, "tomato"]))
+  fac = relevel(factor(sapply(rownames(tab), function(x) subset(scrna_meta, pool == x)$experiment[1])), "wt_chim")
+  
+  tab_norm = tab / globalpropfactor
+  prop_norm = tab_norm[,2]/rowSums(tab_norm)
+  weights = rowSums(tab)
+  
+  fit_global = glm(tab[,c("TRUE", "FALSE")] ~ fac + globalprop, family = "binomial")
+  fit.s_global = summary(fit_global)
+  pval_global = fit.s_global$coefficients[2, "Pr(>|z|)"]
+  pval_global
+  
+  fit = glm(tab[,c("TRUE", "FALSE")] ~ fac, family = "binomial")
+  fit.s = summary(fit)
+  pval = fit.s$coefficients[2, "Pr(>|z|)"]
+  pval
+  
+  if (plot) {
+    addmargins(tab_norm)
+    plot(tab[,2]/rowSums(tab), col = fac, pch = 16, ylim = c(0,1))
+    points(prop_norm, col = fac, pch = 1)
+    abline(h = 0.5, lty = 2)
+    points(fit_global$fitted.values, col = fac, pch = 2)
+  }
+  
+  pvals_noglobal[i] <- pval
+  pvals_global[i] <- pval_global
+  coefs_global[i] <- fit.s_global$coefficients[2, "Estimate"]
+  
+}
+
+par(mfrow = c(1,2))
+plot(sort(pvals_noglobal))
+abline(c(0,1/length(pvals_noglobal)))
+plot(sort(pvals_global))
+abline(c(0,1/length(pvals_global)))
+```
+
+Given the simulation, write a function to perform binomial testing and 
+output pvalue and estimated coefficient
+
+```{r}
+chimera_glm = function(meta, cells, globalprop = NULL, plot = FALSE) {
+  
+  if (is.null(globalprop)) {
+    globaltab = unclass(table(meta[, "pool"], meta[, "tomato"]))
+    globalprop = prop.table(globaltab, 1)[,2]
+  }
+  
+  tab = unclass(table(meta[cells, "pool"], meta[cells, "tomato"]))
+  if (length(unique(meta[cells, "experiment"])) == 1 |
+      any(tab == 0)) {
+    return(c("pval" = 1, "coef" = 0))
+  }
+  fac = relevel(factor(sapply(rownames(tab), function(x) subset(meta, pool == x)$experiment[1])), "wt_chim")
+  
+  fit_global = glm(tab[,c("TRUE", "FALSE")] ~ fac + globalprop[rownames(tab)], family = "binomial")
+  fit.s_global = summary(fit_global)
+  pval_global = fit.s_global$coefficients[2, "Pr(>|z|)"]
+  coef_global = fit.s_global$coefficients[2, "Estimate"]
+  
+  if (plot) {
+    plot(tab[,2]/rowSums(tab), col = fac, pch = 16, ylim = c(0,1))
+    abline(h = 0.5, lty = 2)
+    points(fit_global$fitted.values, col = fac, pch = 2)
+  }
+  
+  return(c("pval" = pval_global, "coef" = coef_global))
+  
+}
+
+chimera_glm(scrna_meta, sample(subset(out$scrna_meta, experiment %in% c("wt_chim", "t_chim"))$cell)[1:1000], plot = TRUE)
+```
+
+Now, using the nearest neighbours as extracted from StabMap embedding, 
+perform differential abundance testing using the GLM. Export as output file.
+
+```{r}
+if (!file.exists("../../output/chimera_glm_out.Rds")) {
+  cells_spatial = rownames(seqFISH_meta)
+  cells_chimera = subset(out$scrna_meta, experiment %in% c("wt_chim", "t_chim"))$cell
+  ncells = 1000
+  
+  NN = queryNamedKNN(StabMap_corrected[cells_chimera,],
+                     StabMap_corrected[cells_spatial,],
+                     k = ncells)
+  
+  chimera_glm(scrna_meta, NN[1,], plot = TRUE)
+  
+  globaltab = unclass(table(scrna_meta[, "pool"], scrna_meta[, "tomato"]))
+  globalprop = prop.table(globaltab, 1)[,2]
+  
+  chimera_glm_out = t(apply(NN, 1, chimera_glm, meta = scrna_meta, globalprop = globalprop))
+  saveRDS(chimera_glm_out, file = "../../output/chimera_glm_out.Rds")
+} else {
+  chimera_glm_out = readRDS("../../output/chimera_glm_out.Rds") 
+}
+
+hist(chimera_glm_out[,"pval"], 100)
+
+plot(chimera_glm_out[,"coef"], -log10(chimera_glm_out[,"pval"]))
+```
+
+# Interpret
+
+```{r}
+seqFISH_meta$chimera_glm_pval = chimera_glm_out[,"pval"]
+seqFISH_meta$chimera_glm_coef = chimera_glm_out[,"coef"]
+seqFISH_meta$chimera_glm_fdr = p.adjust(chimera_glm_out[,"pval"], method = "BH")
+
+maxfdr = max(subset(seqFISH_meta, chimera_glm_fdr < 0.05)$chimera_glm_pval)
+
+seqFISH_meta$chimera_glm_dir = factor(ifelse(seqFISH_meta$chimera_glm_fdr < 0.05,
+                                             ifelse(sign(seqFISH_meta$chimera_glm_coef) == 1, "up", "down"),
+                                             "n.s."))
+```
+
+
+```{r}
+seqFISH_meta_labels = data.frame(
+  celltype = names(tapply(seqFISH_meta$StabMap_UMAP1, seqFISH_meta$celltype_mapped_refined, median)),
+  StabMap_UMAP1 = tapply(seqFISH_meta$StabMap_UMAP1, seqFISH_meta$celltype_mapped_refined, median),
+  StabMap_UMAP2 = tapply(seqFISH_meta$StabMap_UMAP2, seqFISH_meta$celltype_mapped_refined, median)
+)
+seqFISH_meta_labels <- seqFISH_meta_labels[seqFISH_meta_labels$celltype != "Low quality",]
+
+g_u1 = ggplot(seqFISH_meta[order(abs(seqFISH_meta$chimera_glm_coef)),], 
+              aes(x = StabMap_UMAP1, y = StabMap_UMAP2)) +
+  geom_point(aes(colour = chimera_glm_coef), size = 0.5) +
+  scale_colour_gradient2(low = "blue", high = "red", mid = "grey") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.text = element_blank()) +
+  coord_fixed() +
+  theme(axis.ticks = element_blank()) +
+  theme(axis.title = element_text(size = 20)) +
+  xlab("StabMap UMAP1") +
+  ylab("StabMap UMAP2") +
+  geom_text_repel(aes(label = celltype), data = seqFISH_meta_labels,
+                  size = 3) + 
+  NULL
+g_u1
+
+ggsave(g_u1, file = "../../Figures/raw/chimera_seqFISH_stabmap_chimera_coef.pdf",
+       height = 6, width = 6)
+
+g_u1_leg = as_ggplot(get_legend(g_u1 + theme(legend.position = "bottom") +
+                                  guides(colour = guide_colourbar(title = "T-/- enrichment\ncoefficient",
+                                                                  title.position = "top",
+                                                                  title.hjust = 0.5,
+                                                                  ncol = 5,
+                                                                  override.aes = list(size = 6, alpha = 1)))))
+ggsave(g_u1_leg, file = paste0("../../Figures/raw/chimera_seqFISH_stabmap_chimera_coef_leg.pdf"), height = 3, width = 4)
+```
+
+Cells coloured by the significance level, much darker points around the presomitic
+mesoderm region and posterior gut tube regions.
+
+```{r}
+g1 = ggplot(seqFISH_meta, aes(x = x_global_affine, y = -y_global_affine)) +
+  geom_point(aes(colour = -log(chimera_glm_pval)), size = 1) +
+  scale_colour_gradient(low = "grey", high = "black") +
+  coord_fixed() +
+  facet_wrap(~embryo) +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  NULL
+g1
+
+g1.1 = ggplot(seqFISH_meta,
+              aes(x = x_global_affine, y = -y_global_affine)) +
+  geom_scattermore(aes(colour = -log(chimera_glm_pval)), pointsize = 1.3) +
+  scale_colour_gradient2(low = "grey99", mid = "black", high = "black", midpoint = 15) +
+  theme_classic() +
+  facet_wrap(~embryo) +
+  theme(strip.background = element_blank(),
+        strip.text = element_blank()) +
+  theme(legend.position = "none") +
+  theme(axis.text = element_blank()) +
+  theme(axis.line = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  xlab("") + ylab("") +
+  add_scalebar() +
+  coord_fixed() +
+  NULL 
+g1.1
+ggsave(g1.1, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_pvalue.pdf",
+       height = 6, width = 12)
+
+g1.1_leg = as_ggplot(get_legend(g1.1 + 
+                                  theme(legend.position = "bottom") +
+                                  guides(colour = guide_colourbar(title = "-log(P-value)",
+                                                                  title.position = "top",
+                                                                  title.hjust = 0.5,
+                                                                  override.aes = list(alpha = 1, size =5)))))
+g1.1_leg
+ggsave(g1.1_leg, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_pvalue_leg.pdf",
+       height = 1, width = 2)
+
+
+g1.2 = ggplot(seqFISH_meta,
+              aes(x = x_global_affine, y = -y_global_affine)) +
+  geom_scattermore(aes(colour = celltype_mapped_refined), pointsize = 1.3) +
+  scale_colour_manual(values = celltype_colours) +
+  theme_classic() +
+  facet_wrap(~embryo) +
+  theme(strip.background = element_blank(),
+        strip.text = element_blank()) +
+  theme(legend.position = "none") +
+  theme(axis.text = element_blank()) +
+  theme(axis.line = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  xlab("") + ylab("") +
+  add_scalebar() +
+  coord_fixed() +
+  NULL 
+g1.2
+ggsave(g1.2, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_celltype.pdf",
+       height = 6, width = 12)
+
+g1.2_leg = as_ggplot(get_legend(g1.2 + 
+                                  theme(legend.position = "bottom") +
+                                  guides(colour = guide_legend(title = "",
+                                                               title.position = "top",
+                                                               override.aes = list(alpha = 1, size =5)))))
+g1.2_leg
+ggsave(g1.2_leg, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_celltype_leg.pdf",
+       height = 3, width = 10)
+
+
+g1.3 = ggplot(seqFISH_meta,
+              aes(x = x_global_affine, y = -y_global_affine)) +
+  geom_scattermore(aes(colour = chimera_glm_coef), pointsize = 1.3) +
+  scale_colour_gradient2(low = "blue", mid = "grey", high = "red", midpoint = 0) +
+  theme_classic() +
+  facet_wrap(~embryo) +
+  theme(strip.background = element_blank(),
+        strip.text = element_blank()) +
+  theme(legend.position = "none") +
+  theme(axis.text = element_blank()) +
+  theme(axis.line = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  xlab("") + ylab("") +
+  add_scalebar() +
+  coord_fixed() +
+  NULL 
+g1.3
+ggsave(g1.3, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_coef.pdf",
+       height = 6, width = 12)
+
+g1.3_leg = as_ggplot(get_legend(g1.3 + 
+                                  theme(legend.position = "bottom") +
+                                  guides(colour = guide_colourbar(title = "T-/- enrichment\ncoefficient",
+                                                                  title.position = "top",
+                                                                  title.hjust = 0.5,
+                                                                  override.aes = list(alpha = 1, size =5)))))
+g1.3_leg
+ggsave(g1.3_leg, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_coef_leg.pdf",
+       height = 3, width = 10)
+```
+
+Relationship between glm coefficient (under-/over-representation) and cell types
+per embryo.
+
+```{r}
+seqFISH_meta$celltype_mapped_refined <- factor(
+  seqFISH_meta$celltype_mapped_refined,
+  levels = names(sort(tapply(seqFISH_meta$chimera_glm_coef, seqFISH_meta$celltype_mapped_refined, mean))))
+
+g4 = ggplot(seqFISH_meta, aes(x = celltype_mapped_refined, y = chimera_glm_coef)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(fill = celltype_mapped_refined, colour = embryo), scale = "width", draw_quantiles = 0.5) +
+  scale_fill_manual(values = celltype_colours) +
+  scale_colour_manual(values = setNames(rep("grey50", 3), unique(seqFISH_meta$embryo))) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1, size = 15)) +
+  theme(axis.title.y = element_text(size = 15)) +
+  ylab("T-/- enrichment coefficient") +
+  xlab("") +
+  NULL
+g4
+
+ggsave(g4, file = "../../Figures/raw/chimera_seqFISH_stabmap_boxplot_coef.pdf",
+       height = 6, width = 14)
+```
+
+Volcano plot of representation coloured by cell type per embryo.
+
+```{r}
+g5 = ggplot(seqFISH_meta, aes(x = chimera_glm_coef, y = -log10(chimera_glm_pval))) +
+  geom_point(aes(colour = celltype_mapped_refined), alpha = 0.5) +
+  scale_colour_manual(values = celltype_colours) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = -log10(maxfdr)) +
+  facet_wrap(~embryo) +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  NULL
+g5
+```
+
+Volcano plot of representation split by cell type.
+
+```{r}
+g6 = ggplot(seqFISH_meta, aes(x = chimera_glm_coef, y = -log10(chimera_glm_pval))) +
+  geom_point(aes(colour = celltype_mapped_refined), alpha = 0.5) +
+  scale_colour_manual(values = celltype_colours) +
+  geom_vline(xintercept = 0) +
+  facet_wrap(~celltype_mapped_refined) +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  NULL
+g6
+```
+
+# Fit principal curves for the meso types
+
+```{r}
+meso_types = c("Splanchnic mesoderm")
+
+seqFISH_meta_spl = subset(seqFISH_meta, celltype_mapped_refined %in% meso_types)
+dat_split = split.data.frame(seqFISH_meta_spl, seqFISH_meta_spl$embryo)
+
+orderList = list()
+ordered_cells_meso = list()
+fitList = list()
+fittedList = list()
+
+par(mfrow = c(1,3))
+for (i in 1:length(dat_split)) {
+  
+  coords = as.matrix(dat_split[[i]][, c("x_global_affine", "y_global_affine")])
+  coords[,2] <- -coords[,2]
+  
+  plot(coords, asp = 1, pch = 16)
+  
+  fit0 = principal_curve(coords, df = 4)
+  fitList[[i]] <- fit0
+  
+  points(fit0, col = "blue")
+  points(fit0$s[fit0$ord,][1:10,], col = "red", pch = 16)
+  
+  ordered_cells = rownames(coords[fit0$ord,])
+  
+  ordered_cells_meso[[i]] <- ordered_cells
+  
+  fittedList[[i]] <- fit0$s
+  
+  if (coords[ordered_cells[1],1] > coords[ordered_cells[length(ordered_cells)],1]) {
+    ordered_cells <- rev(ordered_cells)
+  }
+  
+  orderList[[i]] <- setNames(seq_len(length(ordered_cells)), ordered_cells)
+  
+}
+
+seqFISH_meta_spl$AP = unlist(orderList)[rownames(seqFISH_meta_spl)]
+seqFISH_meta_spl$AP_fitted_x = unlist(lapply(fittedList, "[", , 1))[rownames(seqFISH_meta_spl)]
+seqFISH_meta_spl$AP_fitted_y = unlist(lapply(fittedList, "[", , 2))[rownames(seqFISH_meta_spl)]
+seqFISH_meta_spl$AP_rank = unsplit(tapply(seqFISH_meta_spl$AP,seqFISH_meta_spl$embryo, function(x) rank(x)/length(x)),seqFISH_meta_spl$embryo)
+
+g11.3 = ggplot(seqFISH_meta_spl[order(abs(seqFISH_meta_spl$chimera_glm_coef)),], 
+               aes(x = x_global_affine, y = -y_global_affine)) +
+  geom_scattermore(colour = "grey90", data = seqFISH_meta, alpha = 1,
+                   pointsize = 2.3) +
+  geom_point(aes(colour = chimera_glm_coef), 
+             data = subset(seqFISH_meta_spl, celltype_mapped_refined %in% meso_types),
+             size = 0.7) +
+  geom_path(colour = "black", aes(x = AP_fitted_x, y = AP_fitted_y),
+            data = reshape::sort_df(subset(seqFISH_meta_spl, AP_rank < 0.99), "AP"),
+            arrow = arrow(type = "closed")
+  ) +
+  scale_colour_gradient2(low = "blue", high = "red", mid = "grey") +
+  facet_wrap(~ embryo) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.text = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  theme(axis.line = element_blank()) +
+  theme(strip.background = element_rect(colour = "white"),
+        strip.text = element_text(size = 20)) +
+  xlab("") +
+  ylab("") +
+  coord_fixed() +
+  add_scalebar() +
+  NULL
+g11.3
+
+ggsave(g11.3, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_spl_princurve_coef.pdf",
+       height = 6, width = 12)
+
+g11.2.3 = ggplot(subset(seqFISH_meta_spl, celltype_mapped_refined %in% meso_types), 
+                 aes(x = AP_rank, y = chimera_glm_coef)) +
+  geom_point(aes(colour = chimera_glm_coef)) +
+  scale_colour_gradient2(low = "blue", high = "red", mid = "grey") +
+  facet_grid(embryo ~ celltype_mapped_refined, scales = "free_x") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_blank()) +
+  theme(axis.text.y = element_blank()) +
+  theme(axis.ticks.y = element_blank()) +
+  theme(axis.ticks.x = element_blank()) +
+  geom_smooth(method = "loess", aes(group = embryo), colour = "black",
+              fill = NA,
+              size = 0.25) +
+  theme(strip.background = element_rect(colour = "white")) +
+  theme(strip.text = element_text(size = 15)) +
+  theme(axis.line.x = element_blank()) +
+  geom_hline(yintercept = 0) +
+  xlab("Anterior <-> Posterior") +
+  ylab("T-/- enrichment coefficient") +
+  NULL
+g11.2.3
+
+ggsave(g11.2.3, file = "../../Figures/raw/chimera_seqFISH_stabmap_AP_splanchnicmesoderm_coef_lines.pdf",
+       height = 6, width = 8)
+
+# test for a coefficient shift across AP axis
+data_split = split.data.frame(seqFISH_meta_spl, droplevels(seqFISH_meta_spl$celltype_mapped_refined))
+lm_out = as.data.frame(do.call(rbind,lapply(data_split, function(dat) {
+  print(dat[1,])
+  fit_lm = lm(chimera_glm_coef ~ embryo + AP_rank, data = dat)
+  return(setNames(summary(fit_lm)$coef["AP_rank", c("Estimate", "Pr(>|t|)")],
+                  c("Estimate", "pvalue")))
+})))
+lm_out$celltype_mapped_refined <- rownames(lm_out)
+
+print(lm_out)
+```
+
+# Assess gene expression changes along the A-P for cranial mesoderm
+
+```{r}
+# select roughly half of the cells that are along the AP axis ahead of the 
+# positive coefficient value
+
+seqFISH_meta_spl$chimera_glm_coef_smooth = unsplit(lapply(split.data.frame(seqFISH_meta_spl, seqFISH_meta_spl$embryo),
+                                                          function(x){
+                                                            smoothfit = loess(chimera_glm_coef ~ AP_rank, data = x)$fitted
+                                                          }),seqFISH_meta_spl$embryo)
+# for each embryo count how many are positive, and then select 2x that many 
+# from the most anterior
+seqFISH_meta_spl$spl_DE = unsplit(lapply(split.data.frame(seqFISH_meta_spl, seqFISH_meta_spl$embryo),
+                                         function(x){
+                                           npos = sum(x$chimera_glm_coef_smooth > 0)
+                                           sel = rank(x$AP) < (2*npos)
+                                           return(sel)
+                                         }),seqFISH_meta_spl$embryo)
+
+ggplot(seqFISH_meta_spl, aes(x = AP_rank, y = chimera_glm_coef, colour = spl_DE)) + 
+  geom_point() + 
+  facet_wrap(~embryo) + 
+  geom_point(aes(y = chimera_glm_coef_smooth), colour = "red") + 
+  geom_hline(yintercept = 0)
+
+scrna_raw = readRDS("../../MouseGastrulationData/MGD_chimera_scrna.Rds")
+rownames(scrna_raw) <- make.unique(rowData(scrna_raw)[,"SYMBOL"])
+
+keepgenes = getHVGs(scrna_raw[,scrna_raw$experiment == "atlas"])
+
+cells_spl_spatial = rownames(subset(seqFISH_meta_spl, spl_DE))
+
+spl_imp = imputeEmbedding(
+  assay_list = list(atlas = logcounts(scrna_raw[keepgenes,scrna_raw$experiment == "atlas"])),
+  embedding = StabMap_corrected,
+  query = cells_spl_spatial
+)[["atlas"]]
+
+# perform differential expression according to the AP value
+library(limma) 
+mm1 = model.matrix(~ AP + embryo, data = seqFISH_meta_spl[cells_spl_spatial,])
+fit1 = lmFit(spl_imp, mm1)
+fit1 <- eBayes(fit1)
+tt1 = topTable(fit1,coef="AP", sort.by = "none", number = Inf)
+volcanoplot(fit1, coef = "AP", highlight = 50, names = rownames(tt1))
+tt1$gene = rownames(tt1)
+g_de_ap = ggplot(tt1, aes(x = logFC, y = -log10(P.Value))) + 
+  geom_vline(xintercept = 0) +
+  geom_point(colour = "grey") + 
+  geom_text_repel(aes(label = gene), data = subset(tt1, rank(P.Value) < 30), size = 7, fontface = "italic") +
+  theme_classic() +
+  ggtitle("Linear effect test") +
+  xlab("Log Fold Change") +
+  ylab("-log(P-value)") +
+  theme(axis.title = element_text(size = 15)) +
+  theme(plot.title = element_text(size = 20, hjust = 0.5)) +
+  NULL
+g_de_ap
+ggsave(g_de_ap, file = "../../Figures/raw/chimera_seqFISH_stabmap_AP_splanchnicmesoderm_de_ap.pdf",
+       height = 9, width = 8)
+
+mm2 = model.matrix(~ AP + I(AP^2) + embryo, data = seqFISH_meta_spl[cells_spl_spatial,])
+fit2 = lmFit(spl_imp, mm2)
+fit2 <- eBayes(fit2)
+tt2 = topTable(fit2,coef="AP", sort.by = "none", number = Inf)
+volcanoplot(fit2, coef = "I(AP^2)", highlight = 50, names = rownames(tt2))
+tt2$gene = rownames(tt2)
+g_de_ap2 = ggplot(tt2, aes(x = logFC, y = -log10(P.Value))) + 
+  geom_vline(xintercept = 0) +
+  geom_point(colour = "grey") + 
+  geom_text_repel(aes(label = gene), data = subset(tt2, rank(P.Value) < 20), size = 7, fontface = "italic") +
+  theme_classic() +
+  theme(axis.title = element_text(size = 15)) +
+  theme(plot.title = element_text(size = 20, hjust = 0.5)) +
+  xlab("Log Fold Change") +
+  ylab("") +
+  ggtitle("Quadratic effect test") +
+  NULL
+g_de_ap2
+ggsave(g_de_ap2, file = "../../Figures/raw/chimera_seqFISH_stabmap_AP_splanchnicmesoderm_de_ap2.pdf",
+       height = 9, width = 8)
+
+seqFISH_meta_spl_expr = seqFISH_meta_spl[cells_spl_spatial,]
+expr_genes = sort(c("Wnt2", "Tbx1", "Ccnd2", "Foxf1", "Apoe"))
+seqFISH_meta_spl_expr[,expr_genes] <- t(spl_imp[expr_genes,])
+expr_genes_cols = setNames(nord(n = length(expr_genes), palette = "red_mountain"), expr_genes)
+seqFISH_meta_spl_expr_melt = reshape::melt.data.frame(seqFISH_meta_spl_expr, "AP", expr_genes)
+g_test = ggplot(seqFISH_meta_spl_expr_melt, aes(x = AP, y = value)) +
+  geom_smooth(aes(group = variable, colour = variable, fill = variable), method = "loess") +
+  theme_classic() +
+  scale_colour_manual(values = expr_genes_cols, aesthetics = c("colour", "fill")) +
+  ylab("Imputed gene expression") + 
+  xlab("Anterior <-> Posterior") +
+  theme(axis.title = element_text(size = 15)) +
+  theme(axis.text.x = element_blank()) +
+  theme(axis.ticks.x = element_blank()) +
+  guides(colour = guide_legend(title = "", label.theme = element_text(face = "italic"))) +
+  guides(fill = guide_legend(title = "", fontface = "italic")) +
+  NULL
+g_test
+ggsave(g_test,
+       file = "../../Figures/raw/chimera_seqFISH_stabmap_AP_splanchnicmesoderm_AP_expr.pdf",
+       height = 4, width = 12)
+
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```
