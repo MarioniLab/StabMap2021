@@ -187,11 +187,19 @@ celltype_colours = colors
 
 mosaicDataUpSet(assay_list)
 
-g = mosaicDataUpSet(assay_list)
+g = mosaicDataUpSet(setNames(assay_list, toupper(names(assay_list))),
+                    text.scale = c(3,1,2,1,3,3), 
+                    point.size = 2.8, 
+                    line.size = 1,
+                    sets.x.label = "Cells",
+                    mainbar.y.label = "Features",
+                    main.bar.color = method_colours["StabMap"],
+                    set_size.numbers_size = TRUE)
 pdf(paste0("../../Figures/raw/PBMC_multiome_upset.pdf"), 
-    width = 4, height = 3)
+    width = 5, height = 5)
 print(g)
 dev.off()
+
 ```
 
 Perform StabMap and other methods.
@@ -268,6 +276,7 @@ pl = function(embedding_UMAP, name, coltype = "type", xlab = "UMAP1", ylab = "UM
     theme(axis.ticks = element_blank()) +
     theme(axis.text = element_blank()) +
     theme(legend.position = "none") +
+    theme(plot.title = element_text(hjust = 0.5, size = 20)) +
     xlab(xlab) +
     ylab(ylab) +
     NULL
@@ -330,7 +339,7 @@ ggsave(g_leg, file = "../../Figures/raw/PBMC_multiome_UMAPs_modalitylegend.pdf",
 
 g = pl(embeddings_corrected_UMAP[[1]], "", coltype = "ctype") + 
   theme(legend.position = "right") +
-  guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) + 
+  guides(colour = guide_legend(override.aes = list(size = 6, alpha = 1))) + 
   labs(colour = "")
 
 g_leg = as_ggplot(get_legend(g))
@@ -410,6 +419,8 @@ g2 = ggplot(subset(res, type %in% typesToKeep), aes(x = type, y = Accuracy)) +
   labs(fill = "") +
   xlab("") +
   theme_classic() +
+  theme(axis.text = element_text(size = 13)) +
+  theme(axis.title = element_text(size = 20)) +
   ylab("Cell type accuracy") +
   scale_fill_manual(values = method_colours) +
   theme(legend.position = "none") +
@@ -511,8 +522,10 @@ g = ggplot(subset(df_jaccard, type %in% c(typesToKeep, "PC_separate")), aes(x = 
   geom_violin(draw_quantiles = c(0.5), adjust = 1.5, scale = "width") +
   labs(fill = "") +
   scale_fill_manual(values = method_colours) +
-  ylab("Jaccard similarity among 50 neighbours") +
+  ylab("Jaccard similarity among\n50 neighbours") +
   theme(legend.position = "none") +
+  theme(axis.title = element_text(size = 20)) +
+  theme(axis.text = element_text(size = 13)) +
   xlab("") +
   NULL
 print(g)
@@ -585,12 +598,15 @@ g = ggplot(nei_df, aes(x = factor(X2), y = value, group = X1)) +
   labs(colour = "", linetype = "", fill = "") +
   scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
   xlab("X") +
-  ylab("Number of cells with at most X other\ncells nearer to matched cell") +
+  ylab("Cells at most X \n nearer to matched cell") +
   theme(legend.position = "bottom") +
+  theme(axis.title.y = element_text(size = 20)) +
+  theme(axis.title.x = element_text(size = 15)) +
+  theme(axis.text = element_text(size = 13)) +
   NULL
 g
 ggsave(g + theme(legend.position = "none"), file = "../../Figures/raw/PBMC_multiome_matchingcell_bars.pdf",
-       height = 4, width = 4.5)
+       height = 3.5, width = 4.5)
 
 g_leg = as_ggplot(get_legend(g))
 g_leg
@@ -672,17 +688,18 @@ assay_list = mockMosaicData(names = c("RNA", "ATAC"),
                             ngenes = list(1:10, 6:15))
 
 mdt = mosaicDataTopology(assay_list)
-V(mdt)$size = 60
+V(mdt)$size = 50
 V(mdt)$color = method_colours["StabMap"]
 V(mdt)$label.color = "white"
 V(mdt)$frame.color = "darkgrey"
 V(mdt)$label.family = "sans"
-plot(mdt)
+# plot(mdt)
 
-pdf("../../Figures/raw/PBMC_Multiome_mdt.pdf", height = 4, width = 4)
-par(mar = c(1,1,1,1))
-print(plot(mdt))
+pdf("../../Figures/raw/PBMC_Multiome_mdt.pdf", height = 3, width = 3)
+par(mar = c(0,0,0,0))
+print(plot(mdt, layout = layout.grid))
 dev.off()
+
 ```
 
 
