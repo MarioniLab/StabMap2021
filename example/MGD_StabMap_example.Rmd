@@ -63,7 +63,7 @@ pl = function(embedding_UMAP, name, coltype = "type", facet = FALSE) {
   }
   
   if (coltype == "type") {
-    p <- p + scale_colour_manual(values = c("Query" = "red", "Reference" = "black"))
+    p <- p + scale_colour_manual(values = c("Query cells" = "red", "Reference cells" = "black"))
   }
   
   return(p)
@@ -158,7 +158,7 @@ for (sim in names(nGenes_all)) {
       
       # data type factor
       type = factor(ifelse(c(colnames(referenceSCE), colnames(querySCE)) %in% colnames(referenceSCE),
-                           "Reference", "Query"))
+                           "Reference cells", "Query cells"), levels = c("Reference cells", "Query cells"))
       names(type) <- c(colnames(referenceSCE), colnames(querySCE))
       
       # input files as lists
@@ -169,12 +169,20 @@ for (sim in names(nGenes_all)) {
       labels_list = list(Reference = setNames(referenceSCE$celltype, colnames(referenceSCE)))
       
       g = mosaicDataUpSet(assay_list)
+      g = mosaicDataUpSet(assay_list,
+                    text.scale = c(3,1,2,1,3,3), 
+                    point.size = 2.8, 
+                    line.size = 1,
+                    sets.x.label = "Cells",
+                    mainbar.y.label = "Features",
+                    main.bar.color = method_colours["StabMap"],
+                    set_size.numbers_size = TRUE)
       print(g)
       pdf(file = paste0("../../Figures/raw/MGD_", 
                         sim, "_", 
                         querySample, "_",
                         referenceSample,
-                        "_upset.pdf"), height = 3, width = 5)
+                        "_upset.pdf"), height = 4, width = 4)
       print(g)
       dev.off()
       
@@ -372,16 +380,19 @@ g = ggplot(subset(res2, type %in% typesToKeep), aes(x = factor(genes), y = Accur
   stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge", alpha = 0.5) +
   stat_summary(aes(group = type, colour = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
   xlab("Number of genes") +
+  ylab("Cell type accuracy") +
   labs(fill = "") +
   labs(colour = "") +
   theme_classic() +
   geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+  theme(axis.title = element_text(size = 30)) +
+  theme(axis.text = element_text(size = 15)) +
   scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
   theme(legend.position = "none") +
   NULL
 print(g)
 
-ggsave(g, file = "../../Figures/raw/MGD_accuracy_barplots.pdf", height = 6, width = 10)
+ggsave(g, file = "../../Figures/raw/MGD_accuracy_barplots.pdf", height = 5, width = 6)
 ```
 
 Generate a network graph for illustration
@@ -403,6 +414,79 @@ pdf("../../Figures/raw/MGD_mdt.pdf", height = 4, width = 4)
 par(mar = c(1,1,1,1))
 print(plot(mdt))
 dev.off()
+```
+
+# Generate a UMAP graph for illustration
+
+```{r}
+sim = "Sim_2"
+querySample = 29
+referenceSample = 17
+load(paste0("../../output/MGD_StabMap_example/MGD_StabMap_example_embeddings_",
+            sim, "_", querySample, "_", referenceSample,
+            ".RData"))
+names(embeddings_corrected_UMAP)
+
+referenceSCE = atlas[,atlas$sample %in% referenceSample]
+
+querySCE = atlas[genes, atlas$sample %in% querySample]
+
+# data type factor
+type = factor(ifelse(c(colnames(referenceSCE), colnames(querySCE)) %in% colnames(referenceSCE),
+                     "Reference cells", "Query cells"), levels = c("Reference cells", "Query cells"))
+names(type) <- c(colnames(referenceSCE), colnames(querySCE))
+
+p_corrected = 
+  wrap_plots(
+    c(
+      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
+      mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+    )) +
+  plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
+print(p_corrected)
+
+
+# Plot the UMAPs
+gList = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype", facet = TRUE), SIMPLIFY = FALSE)
+
+g = wrap_plots(gList[c("StabMap", "PCA", "MultiMAP", "UINMF")]) + plot_layout(nrow = 1)
+print(g)
+
+gList2 = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP),
+                MoreArgs = list(coltype = "type", facet = FALSE), SIMPLIFY = FALSE)
+g = wrap_plots(gList2) + plot_layout(nrow = 1)
+print(g)
+
+g = wrap_plots(c(
+  lapply(gList2[c("StabMap", "PCA", "UINMF", "MultiMAP")],
+         function(x) x + 
+           theme(plot.title = element_text(hjust = 0.5, size = 25)) + 
+           NULL),
+  lapply(gList[c("StabMap", "PCA", "UINMF", "MultiMAP")],
+         function(x) x + 
+           theme(strip.background = element_rect(colour=NA, fill=NA)) +
+           theme(strip.text = element_text(size = 15)) +
+           theme(plot.title = element_blank()) +
+                   NULL)
+  )) + 
+  plot_layout(nrow = 2, heights = c(1,2))
+
+print(g)
+ggsave(g, file = paste0("../../Figures/raw/MGD_", sim, "_", querySample,
+                        "_", referenceSample,
+                        "_umaps.pdf"), height = 8, width = 9)
+
+g_leg = as_ggplot(get_legend(gList[[1]] + theme(legend.position = "right")
+                             + guides(colour = guide_legend(title = "",
+                                                            ncol = 1,
+                                                            override.aes = list(size = 6.5)))))
+ggsave(g_leg, file = paste0("../../Figures/raw/MGD_celltype_umaps_leg.pdf"), height = 10, width = 4)
+
+g_leg_type = as_ggplot(get_legend(gList2[[1]] + theme(legend.position = "right")
+                                  + guides(colour = guide_legend(title = "",
+                                                                 ncol = 3,
+                                                                 override.aes = list(size = 6)))))
+ggsave(g_leg_type, file = paste0("../../Figures/raw/MGD_type_umaps_leg.pdf"), height = 1, width = 4)
 ```
 
 
