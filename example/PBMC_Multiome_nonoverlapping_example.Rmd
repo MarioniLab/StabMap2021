@@ -30,6 +30,7 @@ library(MultiAssayExperiment)
 library(nord) # for colours
 library(ggpubr) # for extracting legends
 library(lisi) # installed via devtools::install_github("immunogenomics/LISI")
+library(scattermore)
 source("../scripts/initialise.R")
 ```
 
@@ -174,28 +175,41 @@ for (probval in c(10:1)) {
   
   # export some plots:
   g1 = ggplot(out_joint_df, aes(x = modality)) + 
-    geom_bar(fill = "gray") +
+    # geom_bar(fill = "gray") +
+    geom_bar(aes(fill = modality)) + 
+    scale_fill_manual(values = modality_colours) +
     ylab("Number of cells") +
     theme_classic() +
     xlab("Simulated modality") +
     theme(legend.position = "none") +
+    theme(axis.text = element_text(size = 15)) +
+    theme(axis.title = element_text(size = 20)) +
     NULL
   g1
   ggsave(g1, file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
                            "_numCells.pdf"),
-         width = 3, height = 3)
+         width = 4, height = 4)
   
-  g2 = mosaicDataUpSet(assay_list)
+  g2 = mosaicDataUpSet(assay_list,
+                       text.scale = c(3,1,2,1,3,3), 
+                       point.size = 2.8, 
+                       line.size = 1,
+                       sets.x.label = "Cells",
+                       mainbar.y.label = "Features",
+                       main.bar.color = method_colours["StabMap"],
+                       set_size.numbers_size = TRUE)
+  g2
   pdf(paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
              "_upset.pdf"), 
-      width = 4, height = 3)
+      width = 5, height = 5)
   print(g2)
   dev.off()
   
   graph = mosaicDataTopology(assay_list)
   V(graph)$size = 50
-  V(graph)$color = "lightblue"
-  V(graph)$label.color = "black"
+  V(graph)$color = modality_colours[V(graph)$name]
+  V(graph)$label.color = c("white", "black", "black")
+  plot(graph, layout = layout.drl)
   
   pdf(paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
              "_network.pdf"), 
@@ -204,18 +218,19 @@ for (probval in c(10:1)) {
   dev.off()
   
   g3 = ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-    geom_point(aes(colour = modality), size = 0.2) +
+    geom_scattermore(aes(colour = modality), pointsize = 1.3, alpha = 0.5) +
     scale_colour_manual(values = modality_colours) +
     theme_classic() + 
     theme(legend.position = "bottom") +
     theme(axis.ticks = element_blank()) +
     theme(axis.text = element_blank()) +
-    guides(colour = guide_legend(override.aes = list(size = 5))) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) +
     coord_fixed() +
     xlab("UMAP1") + 
     ylab("UMAP2") +
     labs(colour = "") +
     NULL
+  g3
   ggsave(g3 + theme(legend.position = "none"), file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
              "_UMAP_modality.pdf"),
          height = 3, width = 3)
@@ -229,18 +244,18 @@ for (probval in c(10:1)) {
   
   
   g4 = ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-    geom_point(aes(colour = celltype), size = 0.2) +
+     geom_scattermore(aes(colour = celltype), pointsize = 1.3, alpha = 0.5) +
     # scale_colour_nord(palette = "lumina") +
     scale_colour_manual(values = colors) +
     theme_classic() + 
     theme(legend.position = "right",) +
     theme(axis.ticks = element_blank()) +
     theme(axis.text = element_blank()) +
-    guides(colour = guide_legend(override.aes = list(size = 5),
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1),
                                  ncol = 1)) +
     coord_fixed() +
     xlab("UMAP1") + 
-    ylab("UMAP2") +
+    ylab("") +
     labs(colour = "") +
     NULL
   g4
@@ -309,6 +324,7 @@ g1 = ggplot(lisi_values_all, aes(x = numMultiome, y = modality, group = numMulti
   ylab("Modality LISI") +
   geom_boxplot(outlier.size = 0.1, fill = "gray75") + 
   geom_vline(xintercept = 6.5, linetype = "dotted") +
+  theme(axis.title = element_text(size = 12)) +
   NULL
 # g1
 
@@ -318,13 +334,14 @@ g2 = ggplot(lisi_values_all, aes(x = numMultiome, y = celltype, group = numMulti
   xlab("Number of cells in Multiome dataset") +
   geom_boxplot(outlier.size = 0.1, fill = "gray75") + 
   geom_vline(xintercept = 6.5, linetype = "dotted") +
+  theme(axis.title = element_text(size = 12)) +
   NULL
 
 g = g1 + g2 + plot_layout(nrow = 2)
 g
 
 ggsave(g, file = "../../Figures/raw/PBMC_nonoverlapping_multiome_LISI.pdf",
-       height = 3.5, width = 8)
+       height = 3, width = 8)
 ```
 
 # Try with MOFA2
