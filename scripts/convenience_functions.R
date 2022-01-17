@@ -7,3 +7,7 @@ calculateUMAP_rnames = function(embedding, ...) {
   rownames(embedding_UMAP) <- rownames(embedding)
   return(embedding_UMAP)
 }
+
+permuteRows = function(df) {
+  df[sample(seq_len(nrow(df))), , drop = FALSE]
+  }
