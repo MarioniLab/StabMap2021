@@ -170,13 +170,13 @@ for (sim in names(nGenes_all)) {
       
       g = mosaicDataUpSet(assay_list)
       g = mosaicDataUpSet(assay_list,
-                    text.scale = c(3,1,2,1,3,3), 
-                    point.size = 2.8, 
-                    line.size = 1,
-                    sets.x.label = "Cells",
-                    mainbar.y.label = "Features",
-                    main.bar.color = method_colours["StabMap"],
-                    set_size.numbers_size = TRUE)
+                          text.scale = c(3,1,2,1,3,3), 
+                          point.size = 2.8, 
+                          line.size = 1,
+                          sets.x.label = "Cells",
+                          mainbar.y.label = "Features",
+                          main.bar.color = method_colours["StabMap"],
+                          set_size.numbers_size = TRUE)
       print(g)
       pdf(file = paste0("../../Figures/raw/MGD_", 
                         sim, "_", 
@@ -467,8 +467,8 @@ g = wrap_plots(c(
            theme(strip.background = element_rect(colour=NA, fill=NA)) +
            theme(strip.text = element_text(size = 15)) +
            theme(plot.title = element_blank()) +
-                   NULL)
-  )) + 
+           NULL)
+)) + 
   plot_layout(nrow = 2, heights = c(1,2))
 
 print(g)
@@ -487,6 +487,92 @@ g_leg_type = as_ggplot(get_legend(gList2[[1]] + theme(legend.position = "right")
                                                                  ncol = 3,
                                                                  override.aes = list(size = 6)))))
 ggsave(g_leg_type, file = paste0("../../Figures/raw/MGD_type_umaps_leg.pdf"), height = 1, width = 4)
+```
+
+# Generate a UMAP graph for illustration
+
+```{r}
+sims = c("Sim_1", "Sim_3", "Sim_4", "Sim_5")
+for (sim in sims) {
+  querySample = 29
+  referenceSample = 17
+  load(paste0("../../output/MGD_StabMap_example/MGD_StabMap_example_embeddings_",
+              sim, "_", querySample, "_", referenceSample,
+              ".RData"))
+  names(embeddings_corrected_UMAP)
+  
+  genes = simGenes[[sim]]
+  
+  referenceSCE = atlas[,atlas$sample %in% referenceSample]
+  
+  querySCE = atlas[genes, atlas$sample %in% querySample]
+  
+  # data type factor
+  type = factor(ifelse(c(colnames(referenceSCE), colnames(querySCE)) %in% colnames(referenceSCE),
+                       "Reference cells", "Query cells"), levels = c("Reference cells", "Query cells"))
+  names(type) <- c(colnames(referenceSCE), colnames(querySCE))
+  
+  p_corrected = 
+    wrap_plots(
+      c(
+        mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
+        mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+      )) +
+    plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
+  print(p_corrected)
+  
+  
+  # Plot the UMAPs
+  gList = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype", facet = TRUE), SIMPLIFY = FALSE)
+  
+  g = wrap_plots(gList[c("StabMap", "PCA", "MultiMAP", "UINMF")]) + plot_layout(nrow = 1)
+  print(g)
+  
+  gList2 = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP),
+                  MoreArgs = list(coltype = "type", facet = FALSE), SIMPLIFY = FALSE)
+  g = wrap_plots(gList2) + plot_layout(nrow = 1)
+  print(g)
+  
+  g = wrap_plots(c(
+    lapply(gList2[c("StabMap", "PCA", "UINMF", "MultiMAP")],
+           function(x) x + 
+             theme(plot.title = element_text(hjust = 0.5, size = 25)) + 
+             NULL),
+    lapply(gList[c("StabMap", "PCA", "UINMF", "MultiMAP")],
+           function(x) x + 
+             theme(strip.background = element_rect(colour=NA, fill=NA)) +
+             theme(strip.text = element_text(size = 15)) +
+             theme(plot.title = element_blank()) +
+             NULL)
+  )) + 
+    plot_layout(nrow = 2, heights = c(1,2))
+  
+  print(g)
+  ggsave(g, file = paste0("../../Figures/raw/MGD_", sim, "_", querySample,
+                          "_", referenceSample,
+                          "_umaps.pdf"), height = 8, width = 9)
+  
+  assay_list = list(Reference = logcounts(referenceSCE),
+                    Query = logcounts(querySCE))
+  
+  g = mosaicDataUpSet(assay_list,
+                      text.scale = c(3,1,2,1,3,3), 
+                      point.size = 2.8, 
+                      line.size = 1,
+                      sets.x.label = "Cells",
+                      mainbar.y.label = "Features",
+                      main.bar.color = method_colours["StabMap"],
+                      set_size.numbers_size = TRUE,
+                      mainbar.y.max = max(unlist(lapply(assay_list, nrow))*1.2))
+  print(g)
+  pdf(file = paste0("../../Figures/raw/MGD_", 
+                    sim, "_", 
+                    querySample, "_",
+                    referenceSample,
+                    "_upset.pdf"), height = 4, width = 4)
+  print(g)
+  dev.off()
+}
 ```
 
 

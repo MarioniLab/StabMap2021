@@ -191,14 +191,16 @@ for (probval in c(10:1)) {
          width = 4, height = 4)
   
   g2 = mosaicDataUpSet(assay_list,
-                       text.scale = c(3,1,2,1,3,3), 
-                       point.size = 2.8, 
-                       line.size = 1,
-                       sets.x.label = "Cells",
-                       mainbar.y.label = "Features",
-                       main.bar.color = method_colours["StabMap"],
-                       set_size.numbers_size = TRUE)
-  g2
+                     text.scale = c(3,1,2,1,3,3), 
+                     point.size = 2.8, 
+                     line.size = 1,
+                     sets.x.label = "Cells",
+                     mainbar.y.label = "Features",
+                     main.bar.color = method_colours["StabMap"],
+                     set_size.numbers_size = TRUE,
+                     keep.order = TRUE,
+                     sets = names(assay_list))
+g2
   pdf(paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
              "_upset.pdf"), 
       width = 5, height = 5)

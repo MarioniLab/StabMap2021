@@ -597,8 +597,8 @@ g = ggplot(nei_df, aes(x = factor(X2), y = value, group = X1)) +
   geom_line(aes(colour = X1), size = 1, alpha = 0.7) + 
   labs(colour = "", linetype = "", fill = "") +
   scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
-  xlab("X") +
-  ylab("Cells at most X \n nearer to matched cell") +
+  xlab("") +
+  ylab("") +
   theme(legend.position = "bottom") +
   theme(axis.title.y = element_text(size = 20)) +
   theme(axis.title.x = element_text(size = 15)) +

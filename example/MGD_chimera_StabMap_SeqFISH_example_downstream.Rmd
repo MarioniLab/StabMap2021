@@ -475,6 +475,33 @@ g1.3_leg = as_ggplot(get_legend(g1.3 +
 g1.3_leg
 ggsave(g1.3_leg, file = "../../Figures/raw/chimera_seqFISH_stabmap_spatial_coef_leg.pdf",
        height = 3, width = 10)
+
+splitvals = list(1:8, 9:16, 17:24)
+for (splitval in splitvals) {
+  g1.3_split = ggplot(subset(seqFISH_meta, celltype_mapped_refined %in% levels(seqFISH_meta$celltype_mapped_refined)[splitval]),
+                      aes(x = x_global_affine, y = -y_global_affine)) +
+    geom_scattermore(colour = "grey90", pointsize = 1.3, 
+                     data = seqFISH_meta[, !colnames(seqFISH_meta) %in% "celltype_mapped_refined"]) +
+    geom_scattermore(aes(colour = chimera_glm_coef), pointsize = 1.3) +
+    scale_colour_gradient2(low = "blue", mid = "grey", high = "red", midpoint = 0) +
+    theme_classic() +
+    facet_grid(embryo ~ celltype_mapped_refined, switch = "y", labeller = label_wrap_gen(width=10)) +
+    theme(strip.background = element_blank()) +
+    theme(legend.position = "none") +
+    theme(axis.text = element_blank()) +
+    theme(axis.line = element_blank()) +
+    theme(axis.ticks = element_blank()) +
+    xlab("") + ylab("") +
+    add_scalebar() +
+    coord_fixed() +
+    NULL 
+  # g1.3_split
+  ggsave(g1.3_split, file = 
+           paste0("../../Figures/raw/chimera_seqFISH_stabmap_spatial_coef_bycelltype_",
+                  splitval[1],
+                  ".pdf"),
+         height = 6, width = 12)
+}
 ```
 
 Relationship between glm coefficient (under-/over-representation) and cell types
@@ -751,6 +778,7 @@ tmp = cutree(hclust(dist(t(apply(t(spl_imp[expr_genes,]),2,function(x) x/max(x))
 seqFISH_meta_spl_expr_melt$variable_group = tmp[seqFISH_meta_spl_expr_melt$variable]
 
 g_test_list = lapply(split.data.frame(seqFISH_meta_spl_expr_melt, seqFISH_meta_spl_expr_melt$variable_group), function(dat) {
+  nc = length(unique(dat$variable))
   g = ggplot(dat, aes(x = AP, y = value)) +
     geom_scattermore(aes(colour = variable), pointsize = 2.3, alpha = 0.1) +
     geom_smooth(aes(group = variable, colour = variable, fill = variable), method = "loess") +
@@ -761,7 +789,7 @@ g_test_list = lapply(split.data.frame(seqFISH_meta_spl_expr_melt, seqFISH_meta_s
     theme(axis.title = element_text(size = 15)) +
     theme(axis.text.x = element_blank()) +
     theme(axis.ticks.x = element_blank()) +
-    guides(colour = guide_legend(title = "", label.theme = element_text(face = "italic"))) +
+    guides(colour = guide_legend(title = "", label.theme = element_text(face = "italic"), ncol = ifelse(nc > 8, 2, 1))) +
     guides(fill = guide_legend(title = "", fontface = "italic")) +
     NULL
   return(g)
@@ -776,11 +804,11 @@ ggsave(g_test,
        height = 4, width = 12)
 
 # now plot all of them for supp
-g_all = wrap_plots(g_test_list)
+g_all = wrap_plots(g_test_list, ncol = 3)
 g_all
 ggsave(g_all,
        file = "../../Figures/raw/chimera_seqFISH_stabmap_AP_splanchnicmesoderm_AP_expr_all.pdf",
-       height = 12, width = 20)
+       height = 18, width = 16)
 
 
 g_test_h = ggplot(seqFISH_meta_spl_expr_melt, aes(x = AP, y = variable)) +
