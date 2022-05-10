@@ -1,0 +1,149 @@
+---
+title: "StabMap: Generate PBMC ECCITE-seq data object"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(MultiAssayExperiment)
+library(SingleCellMultiModal)
+source("../scripts/initialise.R")
+```
+
+Load data using Bioconductor SingleCellMultiModal package. The ECCITE-aeq data
+originates from Mimitou et al (2019), and includes control and treated samples.
+
+```{r}
+mae <- CITEseq(DataType="peripheral_blood", modes="*", dry.run=FALSE, version="1.0.0")
+mae
+```
+
+Perform some exploration of this data.
+
+```{r}
+rownames(mae)
+upsetSamples(mae)
+sm = sampleMap(mae)
+sm
+cd = colData(mae)
+```
+
+For the purposes of our comparison, we extract only control (CTRL) cells, 
+and only cells for which we have scRNA (gene expression) and scADT (protein) 
+data.
+
+```{r}
+ECCITE_cells = sort(intersect(intersect(sm[sm$assay == "scADT", "colname"],
+                                        sm[sm$assay == "scRNA", "colname"]),
+                              cd[cd$condition == "CTRL", "sampleID"]
+))
+length(ECCITE_cells)
+```
+
+Extract the scRNA-seq data matrix.
+
+```{r}
+counts.rna = experiments(mae)$scRNA[,ECCITE_cells]
+class(counts.rna)
+dim(counts.rna)
+rownames(counts.rna) <- gsub("hg19_", "", rownames(counts.rna))
+
+sce.rna = SingleCellExperiment(assays = list(counts = counts.rna))
+```
+
+Extract the protein ADT data matrix.
+
+```{r}
+adt_features = setdiff(rownames(experiments(mae)$scADT), c("bad_struct", "no_match", "total_reads"))
+counts.adt = experiments(mae)$scADT[adt_features,ECCITE_cells]
+class(counts.adt)
+dim(counts.adt)
+counts.adt
+
+sce.adt = SingleCellExperiment(assays = list(counts = counts.adt))
+```
+
+Perform some exploration of this data, first looking at the RNA modality.
+
+```{r}
+# Normalisation
+sce.rna <- logNormCounts(sce.rna)
+
+# Feature selection
+decomp <- modelGeneVar(sce.rna)
+hvgs <- rownames(decomp)[decomp$mean>0.01 & decomp$p.value <= 0.05]
+
+length(hvgs)
+
+sce.rna <- sce.rna[hvgs,]
+
+# PCA
+sce.rna <- scater::runPCA(sce.rna, ncomponents = 25)
+
+# UMAP
+sce.rna <- scater::runUMAP(sce.rna, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
+plotUMAP(sce.rna, point_size=0.5, point_alpha=1)
+```
+
+Now the ADT modality
+
+```{r}
+# Normalisation
+sce.adt <- logNormCounts(sce.adt)
+
+# PCA
+sce.adt <- scater::runPCA(sce.adt, ncomponents = 10)
+
+# UMAP
+sce.adt <- scater::runUMAP(sce.adt, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
+plotUMAP(sce.adt, point_size=0.5, point_alpha=1)
+```
+
+Concatenate RNA HVGs and protein ADTs.
+
+```{r}
+eccite_logcounts = rbind(logcounts(sce.rna), logcounts(sce.adt))
+
+eccite.sce = SingleCellExperiment(assays = list(logcounts = eccite_logcounts))
+
+# PCA
+eccite.sce <- scater::runPCA(eccite.sce, ncomponents = 25)
+
+# UMAP
+eccite.sce <- scater::runUMAP(eccite.sce, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
+plotUMAP(eccite.sce, point_size=0.5, point_alpha=1)
+```
+
+Save the object as RDS
+
+```{r}
+# save the object as RDS
+saveRDS(eccite.sce, file = "../../ECCITEseq/eccite_sce.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```
+
