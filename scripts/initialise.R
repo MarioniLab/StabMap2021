@@ -17,8 +17,13 @@ source("../scripts/tfidf.R")
 
 # give each method it's own colour
 library(nord)
-method_colours = c(nord(palette = "lumina")[c(4,2)],
-                   nord(palette = "rocky_mountain")[c(1)],
-                   nord(palette = "lake_superior")[c(3)],
-                   nord(palette = "lumina")[c(1)])
-names(method_colours) = c("StabMap", "PCA", "MultiMAP", "UINMF", "PC_separate")
+method_colours = c(nord(palette = "lumina")[c(4,4,4,4,4,2,2,2,2,2,2)],
+                   nord(palette = "rocky_mountain")[c(1,1)],
+                   nord(palette = "lake_superior")[c(3,3)],
+                   nord(palette = "lumina")[c(1)],
+                   nord(palette = "rocky_mountain")[c(2)])
+names(method_colours) = c("StabMap", "StabMap_Harmony","StabMap_fastMNN","StabMap_Seurat","StabMap_embedding_corrected_MNN",
+                          "fastMNN", "PCA", "Naive_Harmony", "Naive_Seurat", "Naive_fastMNN","PC_embedding_corrected_MNN",
+                          "MultiMAP","MultiMAP_embedding",
+                          "UINMF","UINMF_embedding",
+                          "PC_separate", "Seurat")

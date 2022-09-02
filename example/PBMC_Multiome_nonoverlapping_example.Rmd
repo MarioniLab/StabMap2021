@@ -19,7 +19,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
 ```
 
 ```{r}
-set.seed(2021)
+set.seed(2022)
 ```
 
 Load scripts and packages.
@@ -62,11 +62,11 @@ names(experiments(mae))
 sce.rna <- experiments(mae)[["rna"]]
 ```
 
-Normalise and select features for RNA modality. Perform PCA and visualise
-the RNA modality.
+Normalise and select features for RNA modality. Perform PCA and visualise the RNA modality.
 
 ```{r}
 # Normalisation
+sce.rna <- computeSumFactors(sce.rna)
 sce.rna <- logNormCounts(sce.rna)
 
 # Feature selection
@@ -85,8 +85,7 @@ sce.rna <- scater::runUMAP(sce.rna, dimred="PCA", n_neighbors = 25, min_dist = 0
 plotUMAP(sce.rna, colour_by="celltype", point_size=0.5, point_alpha=1)
 ```
 
-Normalise and select features for ATAC modality. Perform PCA and visualise
-the ATAC modality. Note these cells are the same as the RNA modality.
+Normalise and select features for ATAC modality. Perform PCA and visualise the ATAC modality. Note these cells are the same as the RNA modality.
 
 ```{r}
 dim(experiments(mae)[["atac"]])
@@ -109,73 +108,208 @@ sce.atac <- scater::runUMAP(sce.atac, dimred="PCA", n_neighbors = 25, min_dist =
 plotUMAP(sce.atac, colour_by="celltype", point_size=0.5, point_alpha=1)
 ```
 
-Split the cells into three groups with ratios provided below, first for RNA 
-modality, second for 10X Multiome modality, and third for ATAC modality. Using
-this simulation, perform StabMap. Note that other techniques such as PCA,
-UINMF, or MultiMAP require some further matching of features between the RNA
-and ATAC modalities to be able to run.
+Generate an assay_list
+
+```{r}
+probval = 1
+
+modality = sample(c("RNA", "Multiome", "ATAC"), size = ncol(sce.rna),
+                  replace = TRUE,
+                  prob = c(probval,1,probval))
+names(modality) <- colnames(sce.rna)
+table(modality)
+
+# multiome RNA
+M_R = assay(sce.rna, "logcounts")[,modality == "Multiome"]
+M_R_c = assay(sce.rna, "counts")[,modality == "Multiome"]
+
+# multiome ATAC
+M_A = assay(sce.atac, "logcounts")[,modality == "Multiome"]
+M_A_c = assay(sce.atac, "counts")[,modality == "Multiome"]
+
+# RNA
+R = assay(sce.rna, "logcounts")[,modality == "RNA"]
+R_c = assay(sce.rna, "counts")[,modality == "RNA"]
+
+# ATAC
+A = assay(sce.atac, "logcounts")[,modality == "ATAC"]
+A_c = assay(sce.atac, "counts")[,modality == "ATAC"]
+
+# they dont have any overlapping features
+Reduce(intersect, list(c(rownames(M_R), rownames(M_A)), rownames(R), rownames(A)))
+
+# there should be no overlapping colnames between the data,
+# but colnames should be identical between the two multiome sub matrices
+identical(colnames(M_R), colnames(M_A))
+intersect(colnames(M_R), colnames(R))
+intersect(colnames(M_R), colnames(A))
+intersect(colnames(R), colnames(A))
+
+assay_list_counts = list(RNA = R_c,
+                         ATAC = A_c,
+                         Multiome = rbind(M_R_c, M_A_c))
+
+# logcounts
+assay_list = list(RNA = R,
+                  ATAC = A,
+                  Multiome = rbind(M_R, M_A))
+```
+
+
+Split the cells into three groups with ratios provided below, first for RNA modality, second for 10X Multiome modality, and third for ATAC modality. Using this simulation, perform StabMap. Note that other techniques such as PCA, UINMF, or MultiMAP require some further matching of features between the RNA and ATAC modalities to be able to run.
 
 Assess the quality of the mapping visually.
 
 ```{r}
-gList = list()
 lisi_values_list = list()
+pred = NULL
 
-for (probval in c(10:1)) {
+for (probval in rev(c(1,2,3,4,5,10,20))) {
   
   print(probval)
   
-  modality = sample(c("RNA", "Multiome", "ATAC"), size = ncol(sce.rna),
-                    replace = TRUE,
-                    prob = c(probval,1,probval))
-  names(modality) <- colnames(sce.rna)
-  table(modality)
+  outFile = paste0("../../output/PBMC_nonoverlapping_multiome_", probval,
+                   "_embeddings.Rds")
+  if (file.exists(outFile)) {
+    print("file exists, loading..")
+    out = readRDS(outFile)
+    list2env(out, envir = .GlobalEnv)
+    # next
+  } else {
+    
+    modality = sample(c("RNA", "Multiome", "ATAC"), size = ncol(sce.rna),
+                      replace = TRUE,
+                      prob = c(probval,1,probval))
+    names(modality) <- colnames(sce.rna)
+    table(modality)
+    
+    # multiome RNA
+    M_R = assay(sce.rna, "logcounts")[,modality == "Multiome"]
+    M_R_c = assay(sce.rna, "counts")[,modality == "Multiome"]
+    
+    # multiome ATAC
+    M_A = assay(sce.atac, "logcounts")[,modality == "Multiome"]
+    M_A_c = assay(sce.atac, "counts")[,modality == "Multiome"]
+    
+    # RNA
+    R = assay(sce.rna, "logcounts")[,modality == "RNA"]
+    R_c = assay(sce.rna, "counts")[,modality == "RNA"]
+    
+    # ATAC
+    A = assay(sce.atac, "logcounts")[,modality == "ATAC"]
+    A_c = assay(sce.atac, "counts")[,modality == "ATAC"]
+    
+    # they dont have any overlapping features
+    Reduce(intersect, list(c(rownames(M_R), rownames(M_A)), rownames(R), rownames(A)))
+    
+    # there should be no overlapping colnames between the data,
+    # but colnames should be identical between the two multiome sub matrices
+    identical(colnames(M_R), colnames(M_A))
+    intersect(colnames(M_R), colnames(R))
+    intersect(colnames(M_R), colnames(A))
+    intersect(colnames(R), colnames(A))
+    
+    assay_list_counts = list(RNA = R_c,
+                             ATAC = A_c,
+                             Multiome = rbind(M_R_c, M_A_c))
+    
+    # logcounts
+    assay_list = list(RNA = R,
+                      ATAC = A,
+                      Multiome = rbind(M_R, M_A))
+    
+    out_joint = stabMap(assay_list,
+                        projectAll = TRUE,
+                        restrictFeatures = TRUE,
+                        plot = FALSE,
+                        scale.center = TRUE,
+                        scale.scale = TRUE)
+    out_joint <- reWeightEmbedding(out_joint, weights = c("RNA_PC" = 1, "ATAC_PC" = 1, "Multiome_PC" = 1))
+    
+    out_joint_corrected = reducedMNN_batchFactor(
+      as.matrix(out_joint), batchFactor = modality[rownames(out_joint)])
+    out_joint_UMAP_corrected = calculateUMAP_rnames(out_joint_corrected)
+    
+    out_joint_df = data.frame(cell = names(modality),
+                              modality = modality,
+                              celltype = colData(sce.rna)[names(modality),"celltype"],
+                              UMAP1_corrected = out_joint_UMAP_corrected[names(modality),1],
+                              UMAP2_corrected = out_joint_UMAP_corrected[names(modality),2])
+    out_joint_df <- out_joint_df[sample(rownames(out_joint_df)),]
+    
+    # project to RNA space only - this is "multihop" mosaic integration
+    out_joint_RNA = stabMap(assay_list,
+                            reference_list = "RNA",
+                            projectAll = TRUE,
+                            restrictFeatures = TRUE,
+                            plot = FALSE,
+                            scale.center = TRUE,
+                            scale.scale = TRUE)
+    
+    out_joint_RNA_corrected = reducedMNN_batchFactor(
+      as.matrix(out_joint_RNA), batchFactor = modality[rownames(out_joint_RNA)])
+    out_joint_RNA_UMAP_corrected = calculateUMAP_rnames(out_joint_RNA_corrected)
+    
+    out_joint_df$UMAP1_RNA <- out_joint_RNA_UMAP_corrected[rownames(out_joint_df),1]
+    out_joint_df$UMAP2_RNA <- out_joint_RNA_UMAP_corrected[rownames(out_joint_df),2]
+    
+    # perform cobolt integration and add their UMAP coordinates
+    # note that Cobolt wants count data not logcounts
+    out_cobolt = cobolt_wrap(assay_list_counts, verbose = TRUE)
+    out_cobolt_UMAP = calculateUMAP_rnames(out_cobolt)
+    
+    out_joint_df$UMAP1_cobolt <- out_cobolt_UMAP[rownames(out_joint_df),1]
+    out_joint_df$UMAP2_cobolt <- out_cobolt_UMAP[rownames(out_joint_df),2]
+    
+    # perform multiVI and add their UMAP coordsin
+    # note that similar to Cobolt MultiVI wants count data not logcounts
+    out_multivi = multiVI_wrap(assay_list_counts[c("Multiome", "RNA", "ATAC")], verbose = TRUE)
+    out_multivi_UMAP = calculateUMAP_rnames(out_multivi)
+    
+    out_joint_df$UMAP1_multivi <- out_multivi_UMAP[rownames(out_joint_df),1]
+    out_joint_df$UMAP2_multivi <- out_multivi_UMAP[rownames(out_joint_df),2]
+    
+    
+    
+    lisi_values = compute_lisi(out_joint_corrected,
+                               out_joint_df[rownames(out_joint_corrected),],
+                               c("modality", "celltype"))
+    lisi_values$probval <- probval
+    lisi_values$numMultiome <- sum(modality == "Multiome")
+    
+    lisi_values_RNA = compute_lisi(out_joint_RNA_corrected,
+                                   out_joint_df[rownames(out_joint_RNA_corrected),],
+                                   c("modality", "celltype"))
+    lisi_values$modality_RNA <- lisi_values_RNA$modality
+    lisi_values$celltype_RNA <- lisi_values_RNA$celltype
+    
+    lisi_values_cobolt = compute_lisi(out_cobolt,
+                                      out_joint_df[rownames(out_joint_corrected),],
+                                      c("modality", "celltype"))
+    lisi_values$modality_cobolt <- lisi_values_cobolt$modality
+    lisi_values$celltype_cobolt <- lisi_values_cobolt$celltype
+    
+    lisi_values_multivi = compute_lisi(out_multivi,
+                                       out_joint_df[rownames(out_joint_corrected),],
+                                       c("modality", "celltype"))
+    lisi_values$modality_multivi <- lisi_values_multivi$modality
+    lisi_values$celltype_multivi <- lisi_values_multivi$celltype
+    
+    saveRDS(list(out_joint = out_joint,
+                 out_joint_corrected = out_joint_corrected,
+                 out_joint_RNA = out_joint_RNA,
+                 out_joint_RNA_corrected = out_joint_RNA_corrected,
+                 out_cobolt = out_cobolt,
+                 out_multivi = out_multivi,
+                 out_joint_df = out_joint_df,
+                 lisi_values = lisi_values),
+            file =  outFile)
+  }
   
-  # multiome RNA
-  M_R = assay(sce.rna, "logcounts")[,modality == "Multiome"]
-  
-  # multiome ATAC
-  M_A = assay(sce.atac, "logcounts")[,modality == "Multiome"]
-  
-  # RNA
-  R = assay(sce.rna, "logcounts")[,modality == "RNA"]
-  
-  # ATAC
-  A = assay(sce.atac, "logcounts")[,modality == "ATAC"]
-  
-  # they dont have any overlapping features
-  Reduce(intersect, list(c(rownames(M_R), rownames(M_A)), rownames(R), rownames(A)))
-  
-  # there should be no overlapping colnames between the data,
-  # but colnames should be identical between the two multiome sub matrices
-  identical(colnames(M_R), colnames(M_A))
-  intersect(colnames(M_R), colnames(R))
-  intersect(colnames(M_R), colnames(A))
-  intersect(colnames(R), colnames(A))
-  
-  assay_list = list(RNA = R,
-                    ATAC = A,
-                    Multiome = rbind(M_R, M_A))
-  
-  out_joint = stabMap(assay_list,
-                      reference_list = c("Multiome"),
-                      projectAll = TRUE,
-                      plot = FALSE)
-  
-  out_joint_corrected = reducedMNN_batchFactor(
-    as.matrix(out_joint), batchFactor = modality[rownames(out_joint)])
-  out_joint_UMAP_corrected = calculateUMAP_rnames(out_joint_corrected)
-  
-  out_joint_df = data.frame(cell = names(modality),
-                            modality = modality,
-                            celltype = colData(sce.rna)[names(modality),"celltype"],
-                            UMAP1_corrected = out_joint_UMAP_corrected[names(modality),1],
-                            UMAP2_corrected = out_joint_UMAP_corrected[names(modality),2])
-  out_joint_df <- out_joint_df[sample(rownames(out_joint_df)),]
+  lisi_values_list[[probval]] <- lisi_values
   
   # export some plots:
   g1 = ggplot(out_joint_df, aes(x = modality)) + 
-    # geom_bar(fill = "gray") +
     geom_bar(aes(fill = modality)) + 
     scale_fill_manual(values = modality_colours) +
     ylab("Number of cells") +
@@ -191,16 +325,16 @@ for (probval in c(10:1)) {
          width = 4, height = 4)
   
   g2 = mosaicDataUpSet(assay_list,
-                     text.scale = c(3,1,2,1,3,3), 
-                     point.size = 2.8, 
-                     line.size = 1,
-                     sets.x.label = "Cells",
-                     mainbar.y.label = "Features",
-                     main.bar.color = method_colours["StabMap"],
-                     set_size.numbers_size = TRUE,
-                     keep.order = TRUE,
-                     sets = names(assay_list))
-g2
+                       text.scale = c(3,1,2,1,3,3), 
+                       point.size = 2.8, 
+                       line.size = 1,
+                       sets.x.label = "Cells",
+                       mainbar.y.label = "Features",
+                       main.bar.color = method_colours["StabMap"],
+                       set_size.numbers_size = TRUE,
+                       keep.order = TRUE,
+                       sets = names(assay_list))
+  g2
   pdf(paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
              "_upset.pdf"), 
       width = 5, height = 5)
@@ -234,21 +368,77 @@ g2
     NULL
   g3
   ggsave(g3 + theme(legend.position = "none"), file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
-             "_UMAP_modality.pdf"),
+                                                             "_UMAP_modality.pdf"),
          height = 3, width = 3)
   
-    g6 = as_ggplot(get_legend(g3))
+  g6 = as_ggplot(get_legend(g3))
   g6
   ggsave(g6, 
          file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
                        "_UMAP_modality_legend.pdf"),
          height = 1, width = 3)
   
+  g3_RNA = ggplot(out_joint_df, aes(x = UMAP1_RNA, y = UMAP2_RNA)) + 
+    geom_scattermore(aes(colour = modality), pointsize = 1.3, alpha = 0.5) +
+    scale_colour_manual(values = modality_colours) +
+    theme_classic() + 
+    theme(legend.position = "bottom") +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("UMAP2") +
+    labs(colour = "") +
+    NULL
+  g3_RNA
+  ggsave(g3_RNA + theme(legend.position = "none"), file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                                                                 "_RNA_UMAP_modality.pdf"),
+         height = 3, width = 3)
+  
+  g3_cobolt = ggplot(out_joint_df, aes(x = UMAP1_cobolt, y = UMAP2_cobolt)) + 
+    geom_scattermore(aes(colour = modality), pointsize = 1.3, alpha = 0.5) +
+    scale_colour_manual(values = modality_colours) +
+    theme_classic() + 
+    theme(legend.position = "bottom") +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("UMAP2") +
+    labs(colour = "") +
+    NULL
+  g3_cobolt
+  ggsave(g3_cobolt + theme(legend.position = "none"), file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                                                                    "_cobolt_UMAP_modality.pdf"),
+         height = 3, width = 3)
+  
+  g3_multivi = ggplot(out_joint_df, aes(x = UMAP1_multivi, y = UMAP2_multivi)) + 
+    geom_scattermore(aes(colour = modality), pointsize = 1.3, alpha = 0.5) +
+    scale_colour_manual(values = modality_colours) +
+    theme_classic() + 
+    theme(legend.position = "bottom") +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("UMAP2") +
+    labs(colour = "") +
+    NULL
+  g3_multivi
+  ggsave(g3_multivi + theme(legend.position = "none"), file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                                                                     "_multivi_UMAP_modality.pdf"),
+         height = 3, width = 3)
+  
+  library(RColorBrewer)
+  colourCount = length(unique(out_joint_df$celltype))
+  getPalette = colorRampPalette(brewer.pal(9,"Set1"))
   
   g4 = ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-     geom_scattermore(aes(colour = celltype), pointsize = 1.3, alpha = 0.5) +
-    # scale_colour_nord(palette = "lumina") +
-    scale_colour_manual(values = colors) +
+    geom_scattermore(aes(colour = celltype), pointsize = 1.3, alpha = 0.5) +
+    scale_colour_manual(values = getPalette(colourCount)) +
     theme_classic() + 
     theme(legend.position = "right",) +
     theme(axis.ticks = element_blank()) +
@@ -273,51 +463,114 @@ g2
                        "_UMAP_celltype_legend.pdf"),
          height = 5, width = 4)
   
-  g = ggplot(out_joint_df, aes(x = modality)) + 
-    geom_bar(aes(fill = modality)) +
-    ylab("Number of cells") +
-    theme_classic() +
-    ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-    geom_point(aes(colour = modality)) +
+  
+  g4_RNA = ggplot(out_joint_df, aes(x = UMAP1_RNA, y = UMAP2_RNA)) + 
+    geom_scattermore(aes(colour = celltype), pointsize = 1.3, alpha = 0.5) +
+    scale_colour_manual(values = getPalette(colourCount)) +
     theme_classic() + 
-    ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-    geom_point(aes(colour = celltype)) +
-    theme_classic() +
-    ggplot(out_joint_df, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-    geom_point(aes(colour = celltype)) +
-    facet_wrap(~modality) +
-    theme_classic() +
-    plot_layout(design = c("
-                         123
-                         444
-                         ")) +
+    theme(legend.position = "right",) +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1),
+                                 ncol = 1)) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("") +
+    labs(colour = "") +
     NULL
+  g4_RNA
+  ggsave(g4_RNA + theme(legend.position = "none"), 
+         file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                       "_RNA_UMAP_celltype.pdf"),
+         height = 3, width = 3)
   
-  gList[[probval]] <- g
+  g4_cobolt = ggplot(out_joint_df, aes(x = UMAP1_cobolt, y = UMAP2_cobolt)) + 
+    geom_scattermore(aes(colour = celltype), pointsize = 1.3, alpha = 0.5) +
+    scale_colour_manual(values = getPalette(colourCount)) +
+    theme_classic() + 
+    theme(legend.position = "right",) +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1),
+                                 ncol = 1)) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("") +
+    labs(colour = "") +
+    NULL
+  g4_cobolt
+  ggsave(g4_cobolt + theme(legend.position = "none"), 
+         file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                       "_cobolt_UMAP_celltype.pdf"),
+         height = 3, width = 3)
   
-  print(g)
+  g4_multivi = ggplot(out_joint_df, aes(x = UMAP1_multivi, y = UMAP2_multivi)) + 
+    geom_scattermore(aes(colour = celltype), pointsize = 1.3, alpha = 0.5) +
+    scale_colour_manual(values = getPalette(colourCount)) +
+    theme_classic() + 
+    theme(legend.position = "right",) +
+    theme(axis.ticks = element_blank()) +
+    theme(axis.text = element_blank()) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1),
+                                 ncol = 1)) +
+    coord_fixed() +
+    xlab("UMAP1") + 
+    ylab("") +
+    labs(colour = "") +
+    NULL
+  g4_multivi
+  ggsave(g4_multivi + theme(legend.position = "none"), 
+         file = paste0("../../Figures/raw/PBMC_nonoverlapping_multiome_", probval,
+                       "_multivi_UMAP_celltype.pdf"),
+         height = 3, width = 3)
   
-  lisi_values = compute_lisi(out_joint_corrected,
-                             out_joint_df[rownames(out_joint_corrected),],
-                             c("modality", "celltype"))
-  lisi_values$probval <- probval
-  lisi_values$numMultiome <- sum(modality == "Multiome")
   
-  lisi_values_list[[probval]] <- lisi_values
+  # Perform cell type classification across combinations and save the result:
+  combs_raw = combn(c("RNA", "Multiome", "ATAC"), 2)
+  combs = rbind(t(combs_raw), t(combs_raw[c(2,1),]))
+  
+  for (i in 1:nrow(combs)) {
+    
+    library(class)
+    class_train = setNames(subset(out_joint_df, modality == combs[i,1])[,"celltype"], rownames(subset(out_joint_df, modality == combs[i,1])))
+    data_train_multivi = out_multivi[names(class_train),]
+    data_train_stabmap = out_joint_corrected[names(class_train),]
+    data_train_cobolt = out_cobolt[names(class_train),]
+    data_train_stabmap_RNA = out_joint_RNA_corrected[names(class_train),]
+    
+    class_test = setNames(subset(out_joint_df, modality == combs[i,2])[,"celltype"], rownames(subset(out_joint_df, modality == combs[i,2])))
+    data_test_multivi = out_multivi[names(class_test),]
+    data_test_stabmap = out_joint_corrected[names(class_test),]
+    data_test_cobolt = out_cobolt[names(class_test),]
+    data_test_stabmap_RNA = out_joint_RNA_corrected[names(class_test),]
+    
+    acc_multivi = mean(knn(data_train_multivi, data_test_multivi, class_train, k = 5) == class_test)
+    acc_stabmap = mean(knn(data_train_stabmap, data_test_stabmap, class_train, k = 5) == class_test)
+    acc_cobolt = mean(knn(data_train_cobolt, data_test_cobolt, class_train, k = 5) == class_test)
+    acc_stabmap_RNA = mean(knn(data_train_stabmap_RNA, data_test_stabmap_RNA, class_train, k = 5) == class_test)
+    
+    pred_i = data.frame(
+      probval = probval,
+      prediction = paste0(combs[i,], collapse = "_"), 
+      Method = c("MultiVI", "StabMap", "Cobolt", "StabMap_RNA"),
+      acc = c(acc_multivi, acc_stabmap, acc_cobolt, acc_stabmap_RNA))
+    
+    pred = rbind(pred,pred_i)
+  }
+  
 }
 ```
 
-Make some plots - use local inverse simpson index to identify at which point
-there are too few multiome cells to adequately map data across.
-
-It looks like at around 4-5 ratio (5 = around 950 cells) there is decline in 
-the quality of the mapping, suggesting you probably need around 1000 high
-quality multiome cells to be able to trust the mapping between the datasets.
+Make some plots - use local inverse simpson index to identify at which point there are too few multiome cells to adequately map data across.
 
 ```{r}
 lisi_values_all = do.call(rbind, lisi_values_list)
 lisi_values_all$probval <- factor(lisi_values_all$probval)
 lisi_values_all$numMultiome <- factor(lisi_values_all$numMultiome)
+
+saveRDS(lisi_values_all, file = "../../output/PBMC_Multiome_nonoverlapping_LISI_values.Rds")
+
+vval = 3.5
 
 g1 = ggplot(lisi_values_all, aes(x = numMultiome, y = modality, group = numMultiome)) +
   theme_classic() +
@@ -325,17 +578,17 @@ g1 = ggplot(lisi_values_all, aes(x = numMultiome, y = modality, group = numMulti
   theme(axis.text.x = element_blank()) +
   ylab("Modality LISI") +
   geom_boxplot(outlier.size = 0.1, fill = "gray75") + 
-  geom_vline(xintercept = 6.5, linetype = "dotted") +
+  geom_vline(xintercept = vval, linetype = "dotted") +
   theme(axis.title = element_text(size = 12)) +
   NULL
-# g1
+g1
 
 g2 = ggplot(lisi_values_all, aes(x = numMultiome, y = celltype, group = numMultiome)) +
   theme_classic() +
   ylab("Cell type LISI") +
   xlab("Number of cells in Multiome dataset") +
   geom_boxplot(outlier.size = 0.1, fill = "gray75") + 
-  geom_vline(xintercept = 6.5, linetype = "dotted") +
+  geom_vline(xintercept = vval, linetype = "dotted") +
   theme(axis.title = element_text(size = 12)) +
   NULL
 
@@ -346,101 +599,36 @@ ggsave(g, file = "../../Figures/raw/PBMC_nonoverlapping_multiome_LISI.pdf",
        height = 3, width = 8)
 ```
 
-# Try with MOFA2
+# Predict cell type labels across datasets
 
-the last value of the loop above is the equal thirds split
+Use one set of cells to predict another set of cells cell types and calculate accuracy using true
+labels
 
-```{r, eval = FALSE}
-library(data.table)
-library(MOFA2)
+```{r}
+num_map = lisi_values_all[,c("probval","numMultiome")]
+num_map <- num_map[!duplicated(num_map),]
+num_map_val <- setNames(num_map$numMultiome, num_map$probval)
 
-# example data
-# data <- make_example_data(
-#   n_views = 2, 
-#   n_samples = 200, 
-#   n_features = 1000, 
-#   n_factors = 10
-# )[[1]]
+pred$numMultiome <- num_map_val[as.character(pred$probval)]
 
-# lapply(data,dim)
-
-# create data.frame from assay_list
-
-data = do.call(rbind,lapply(assay_list, function(x){
-  xlong = data.frame(
-    sample = rep(colnames(x), times = nrow(x)),
-    feature = rep(rownames(x), each = ncol(x)),
-    view = "view_0",
-    value = c(as.matrix(x))
-  )
-}))
-
-# edit such that the ATAC features are in their own view
-data[data[,"feature"] %in% c(rownames(sce.atac)),"view"] <- "view_1"
-
-MOFAobject <- create_mofa(data)
-
-data_opts <- get_default_data_options(MOFAobject)
-head(data_opts)
-
-model_opts <- get_default_model_options(MOFAobject)
-head(model_opts)
-
-train_opts <- get_default_training_options(MOFAobject)
-head(train_opts)
-
-MOFAobject <- prepare_mofa(
-  object = MOFAobject,
-  data_options = data_opts,
-  model_options = model_opts,
-  training_options = train_opts
-)
-
-plot_data_overview(MOFAobject)
-
-outfile = file.path(getwd(),"model.hdf5")
-MOFAobject.trained <- run_mofa(MOFAobject, outfile, use_basilisk = TRUE)
-
-MOFAobject.trained = load_model(outfile, remove_inactive_factors = FALSE)
-
-plot_data_overview(MOFAobject.trained)
-plot_variance_explained(MOFAobject.trained)
-
-factors <- get_factors(MOFAobject.trained, factors = "all")
-lapply(factors,dim)
-
-MOFA_embedding = factors[[1]]
-MOFA_embedding_umap = calculateUMAP_rnames(MOFA_embedding)
-
-out_joint_df_MOFA = data.frame(cell = names(modality),
-                               modality = modality,
-                               celltype = colData(sce.rna)[names(modality),"celltype"],
-                               UMAP1_corrected = MOFA_embedding_umap[names(modality),1],
-                               UMAP2_corrected = MOFA_embedding_umap[names(modality),2])
-out_joint_df_MOFA <- out_joint_df_MOFA[sample(rownames(out_joint_df_MOFA)),]
-
-g = ggplot(out_joint_df_MOFA, aes(x = modality)) + 
-  geom_bar(aes(fill = modality)) +
-  ylab("Number of cells") +
+g = ggplot(pred, aes(x = numMultiome, y = acc)) + 
+  geom_point(aes(colour = Method), alpha = 0.5) + 
+  geom_smooth(aes(group = Method, colour = Method), fill = NA) +
   theme_classic() +
-  ggplot(out_joint_df_MOFA, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-  geom_point(aes(colour = modality)) +
-  theme_classic() +
-  ggplot(out_joint_df_MOFA, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-  geom_point(aes(colour = celltype)) +
-  theme_classic() +
-  ggplot(out_joint_df_MOFA, aes(x = UMAP1_corrected, y = UMAP2_corrected)) + 
-  geom_point(aes(colour = celltype)) +
-  facet_wrap(~modality) +
-  theme_classic() +
-  plot_layout(design = c("
-                         123
-                         444
-                         ")) +
-  NULL
+  theme(legend.position = "none") +
+  xlab("Number of cells in Multiome dataset") +
+  ylab("Cell type accuracy")
 g
-```
 
+ggsave(g, file = "../../Figures/raw/PBMC_nonoverlapping_accuracy.pdf",
+       height = 4, width = 5)
+
+g_leg = as_ggplot(get_legend(g + theme(legend.position = "bottom") + guides(colour = guide_legend(title = ""))))
+g_leg
+ggsave(g_leg, 
+       file = paste0("../../Figures/raw/PBMC_nonoverlapping_accuracy_legend.pdf"),
+       height = 1, width = 5)
+```
 
 Finish
 

@@ -67,3 +67,38 @@ batchCorrect_batchFactor = function(embedding,
   
   return(resub_corrected)
 }
+
+Seurat_batchFactor = function(embedding,
+                              batchFactor) {
+  
+  # Use the Seurat CCA approach to perform batch integration
+  require(Seurat)
+  
+  seurat.list <- sapply(unique(batchFactor), function(x){
+    CreateSeuratObject(t(embedding[names(batchFactor[batchFactor == x]),]), project = as.character(x))
+  }, simplify = FALSE)
+  
+  # reduc.list = sapply(unique(batchFactor), function(x){
+  #   CreateDimReducObject(embeddings = embedding[names(batchFactor[batchFactor == x]),])
+  # }, simplify = FALSE)
+  
+  seurat.list <- lapply(X = seurat.list, FUN = function(x) {
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = Inf)
+  })
+  
+  features <- SelectIntegrationFeatures(object.list = seurat.list, nfeatures = Inf)
+  
+  seurat.anchors <- FindIntegrationAnchors(object.list = seurat.list, anchor.features = features)
+  # seurat.combined <- tryCatch(
+  #   IntegrateData(anchorset = seurat.anchors),
+  #   error = function(cond) IntegrateData(anchorset = seurat.anchors, k.weight = 10)
+  # )
+  # tryCatch(seurat.combined <- IntegrateData(anchorset = seurat.anchors, k.weight = 10)
+  seurat.combined <- IntegrateData(anchorset = seurat.anchors, k.weight = 10)
+  
+  DefaultAssay(seurat.combined) <- "integrated"
+  
+  int = t(seurat.combined@assays$integrated@data)
+  
+  return(int)
+}

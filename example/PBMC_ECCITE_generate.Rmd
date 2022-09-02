@@ -134,7 +134,7 @@ eccite.sce <- scater::runUMAP(eccite.sce, dimred="PCA", n_neighbors = 25, min_di
 plotUMAP(eccite.sce, point_size=0.5, point_alpha=1)
 ```
 
-Save the object as RDS
+Save the object as RDS.
 
 ```{r}
 # save the object as RDS

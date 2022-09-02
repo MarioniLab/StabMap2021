@@ -79,11 +79,6 @@ samples = mt[mt[, "stage"] == "E8.5", "sample"]
 atlas = EmbryoAtlasData(type = "processed", samples = samples)
 atlas <- logNormCounts(atlas)
 
-decomp <- modelGeneVar(atlas)
-hvgs <- rownames(decomp)[decomp$mean > 0.05 & decomp$total > 0]
-length(hvgs)
-atlas <- atlas[hvgs,]
-
 celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
 
 ct_all = atlas$celltype
@@ -102,20 +97,16 @@ reference dataset cells as the training set, and reporting the classification
 accuracy of the query dataset.
 
 ```{r}
-nGenes_all = c(100, 200, 500, 1000, nrow(atlas),
-               100, 200, 500, 1000,
-               100, 200)
+nGenes_all = c(50, 100, 250, 500, 1000, 2000, 5000)
 
 names(nGenes_all) <- paste0("Sim_", seq_len(length(nGenes_all)))
 
 labels = "celltype"
 assayNameReference = "logcounts"
 assayNameQuery = "logcounts"
-doUMAP = TRUE
-nPCs = 50
+doUMAP = FALSE
 
 resFile = "../../output/MGD_StabMap_example/MGD_StabMap_example_res.Rds"
-simGenesFile = "../../output/MGD_StabMap_example/MGD_StabMap_example_simGenes.Rds"
 
 if (!file.exists(resFile)) {
   res = NULL
@@ -123,20 +114,14 @@ if (!file.exists(resFile)) {
   res = readRDS(resFile)
 }
 
-if (!file.exists(simGenesFile)) {
-  simGenes = list()
-} else {
-  simGenes = readRDS(simGenesFile)
-}
-
 for (sim in names(nGenes_all)) {
   
   nGenes = nGenes_all[sim]
-  if (is.null(simGenes[[sim]])) {
-    genes = sample(rownames(atlas)[rowVars(assay(atlas, assayNameReference)) > 0])[seq_len(nGenes)]
-    simGenes[[sim]] <- genes
+  
+  if (nGenes <= 50) {
+    nPCs = 20
   } else {
-    genes <- simGenes[[sim]]
+    nPCs = 50
   }
   
   for (querySample in samples) {
@@ -154,6 +139,13 @@ for (sim in names(nGenes_all)) {
       
       referenceSCE = atlas[,atlas$sample %in% referenceSample]
       
+      # select HVGs from the referenceSCE and subset
+      decomp <- modelGeneVar(referenceSCE)
+      hvgs <- rownames(decomp)[decomp$mean > 0.05 & decomp$bio > 0]
+      referenceSCE <- referenceSCE[hvgs,]
+      
+      # select random genes from among the HVGs for the query data
+      genes = sample(hvgs)[seq_len(nGenes)]
       querySCE = atlas[genes, atlas$sample %in% querySample]
       
       # data type factor
@@ -187,20 +179,28 @@ for (sim in names(nGenes_all)) {
       dev.off()
       
       # perform PCA
-      PC_embedding = mapPCA(assay_list,nPCs = nPCs)
+      PC_embedding = mapPCA(lapply(assay_list, as.matrix), nPCs = nPCs)
       dim(PC_embedding)
+      colnames(PC_embedding) <- paste0("PC_", seq_len(ncol(PC_embedding)))
       
       # perform UINMF
       UINMF_embedding = UINMF_wrap(counts_list = counts_list)
       dim(UINMF_embedding)
       
-      StabMap_embedding = stabMap(assay_list,
+      StabMap_embedding = stabMap(lapply(assay_list, as.matrix),
                                   reference_list = "Reference",
                                   ncomponentsReference = nPCs,
-                                  ncomponentsSubset = nPCs,
-                                  projectAll = TRUE)
+                                  projectAll = TRUE,
+                                  scale.center = FALSE,
+                                  scale.scale = FALSE,
+                                  plot = FALSE
+      )
       dim(StabMap_embedding)
+      # StabMap_embedding <- reWeightEmbedding(StabMap_embedding, weights = c("Reference_PC" = 1, "Query_PC" = 1))
       
+      # plot(StabMap_embedding[,1:2], col = ifelse(rownames(StabMap_embedding) %in% colnames(assay_list[["Reference"]]), "red", "blue"))
+      # plot(PC_embedding[,1:2], col = ifelse(rownames(PC_embedding) %in% colnames(assay_list[["Reference"]]), "red", "blue"))
+
       MultiMAP_embedding = MultiMAP_wrap(assay_list, verbose = TRUE)
       dim(MultiMAP_embedding)
       
@@ -229,70 +229,84 @@ for (sim in names(nGenes_all)) {
           print(paste0("no batch correction for ", nm))
           assign(paste0(nm, "_corrected"), get(nm), envir = .GlobalEnv)
         } else {
-          assign(paste0(nm, "_corrected"), reducedMNN_batchFactor(get(nm), batchFactor),
+          assign(paste0(nm, "_corrected_none"), get(nm),
                  envir = .GlobalEnv)
+          assign(paste0(nm, "_corrected_MNN"), reducedMNN_batchFactor(get(nm), batchFactor),
+                 envir = .GlobalEnv)
+          assign(paste0(nm, "_corrected_Harmony"), Harmony_batchFactor(get(nm), batchFactor),
+                 envir = .GlobalEnv)
+          tryCatch(assign(paste0(nm, "_corrected_Seurat"), Seurat_batchFactor(get(nm), batchFactor),
+                 envir = .GlobalEnv),
+                 error = function(cond) assign(paste0(nm, "_corrected_Seurat"), NULL,
+                 envir = .GlobalEnv)) 
         }
       }, simplify = FALSE)
       
-      embeddings_corrected_UMAP = sapply(embeddings_names, function(nm) {
-        if (nm %in% noumap) return(get(nm)) # i.e. do nothing
-        calculateUMAP_rnames(get(paste0(nm, "_corrected")))
-      }, simplify = FALSE)
+      embeddings_names_corrected = c(nobatch, apply(expand.grid(setdiff(embeddings_names, nobatch),
+                                                                paste0("_corrected_", c("none", "MNN", "Harmony", "Seurat"))), 1, paste0, collapse = ""))
       
-      p_corrected = 
-        wrap_plots(
-          c(
-            mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
-            mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
-          )) +
-        plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
-      print(p_corrected)
-      
-      
-      # Plot the UMAPs
-      gList = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype", facet = TRUE), SIMPLIFY = FALSE)
-      
-      g = wrap_plots(gList) + plot_layout(nrow = 1)
-      print(g)
-      
-      g = wrap_plots(gList[c("StabMap", "PCA", "MultiMAP", "UINMF")]) + plot_layout(nrow = 1)
-      print(g)
-      
-      gList2 = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP),
-                      MoreArgs = list(coltype = "type", facet = FALSE), SIMPLIFY = FALSE)
-      g = wrap_plots(gList2) + plot_layout(nrow = 1)
-      print(g)
-      
-      g = wrap_plots(c(lapply(gList[c("StabMap", "PCA", "MultiMAP", "UINMF")],
-                              function(x) x + 
-                                theme(strip.background = element_rect(colour=NA, fill=NA)) + 
-                                theme(plot.title = element_text(hjust = 0.5))
-      ),
-      lapply(gList2[c("StabMap", "PCA", "MultiMAP", "UINMF")],
-             function(x) x + ggtitle(NULL)))) + 
-        plot_layout(nrow = 2, heights = c(2,1))
-      
-      print(g)
-      ggsave(g, file = paste0("../../Figures/raw/MGD_", sim, "_", querySample,
-                              "_", referenceSample,
-                              "_umaps.pdf"), height = 6, width = 9)
-      
-      g_leg = as_ggplot(get_legend(gList[[1]] + theme(legend.position = "right")
-                                   + guides(colour = guide_legend(title = "",
-                                                                  ncol = 2,
-                                                                  override.aes = list(size = 6.5)))))
-      ggsave(g_leg, file = paste0("../../Figures/raw/MGD_celltype_umaps_leg.pdf"), height = 5, width = 4)
-      
-      g_leg_type = as_ggplot(get_legend(gList2[[1]] + theme(legend.position = "right")
-                                        + guides(colour = guide_legend(title = "",
-                                                                       ncol = 3,
-                                                                       override.aes = list(size = 6)))))
-      ggsave(g_leg_type, file = paste0("../../Figures/raw/MGD_type_umaps_leg.pdf"), height = 1, width = 4)
+      if (FALSE) {
+        embeddings_corrected_UMAP = sapply(embeddings_names_corrected, function(nm) {
+          if (nm %in% noumap) return(get(nm)) # i.e. do nothing
+          calculateUMAP_rnames(get(paste0(nm)))
+        }, simplify = FALSE)
+        
+        p_corrected = 
+          wrap_plots(
+            c(
+              mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), SIMPLIFY = FALSE),
+              mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype"), SIMPLIFY = FALSE)
+            )) +
+          plot_layout(nrow = 2, ncol = length(embeddings_corrected_UMAP), byrow = TRUE)
+        print(p_corrected)
+        
+        
+        # Plot the UMAPs
+        gList = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP), MoreArgs = list(coltype = "ctype", facet = TRUE), SIMPLIFY = FALSE)
+        
+        g = wrap_plots(gList) + plot_layout(nrow = 1)
+        print(g)
+        
+        gList2 = mapply(pl, embeddings_corrected_UMAP, names(embeddings_corrected_UMAP),
+                        MoreArgs = list(coltype = "type", facet = FALSE), SIMPLIFY = FALSE)
+        g = wrap_plots(gList2) + plot_layout(nrow = 1)
+        print(g)
+        
+        g = wrap_plots(c(lapply(gList,
+                                function(x) x + 
+                                  theme(strip.background = element_rect(colour=NA, fill=NA)) + 
+                                  theme(plot.title = element_text(hjust = 0.5))
+        ),
+        lapply(gList2,
+               function(x) x + ggtitle(NULL)))) + 
+          plot_layout(nrow = 2, heights = c(2,1))
+        
+        print(g)
+        ggsave(g, file = paste0("../../Figures/raw/MGD_", sim, "_", querySample,
+                                "_", referenceSample,
+                                "_umaps.pdf"), height = 6, width = 9)
+        
+        g_leg = as_ggplot(get_legend(gList[[1]] + theme(legend.position = "right")
+                                     + guides(colour = guide_legend(title = "",
+                                                                    ncol = 2,
+                                                                    override.aes = list(size = 6.5)))))
+        ggsave(g_leg, file = paste0("../../Figures/raw/MGD_celltype_umaps_leg.pdf"), height = 5, width = 4)
+        
+        g_leg_type = as_ggplot(get_legend(gList2[[1]] + theme(legend.position = "right")
+                                          + guides(colour = guide_legend(title = "",
+                                                                         ncol = 3,
+                                                                         override.aes = list(size = 6)))))
+        ggsave(g_leg_type, file = paste0("../../Figures/raw/MGD_type_umaps_leg.pdf"), height = 1, width = 4)
+      }
       
       # save the embeddings as Rdata objects
-      save(PC_embedding, StabMap_embedding, PC_embedding_corrected,
-           StabMap_embedding_corrected, UINMF_embedding, MultiMAP_embedding, 
-           embeddings_corrected_UMAP,
+      save(list = c(embeddings_names_corrected,
+                    "PC_embedding",
+                    "StabMap_embedding"),
+                    # "embeddings_corrected_UMAP"),
+           # save(PC_embedding, StabMap_embedding, PC_embedding_corrected,
+           #      StabMap_embedding_corrected, UINMF_embedding, MultiMAP_embedding, 
+           #      embeddings_corrected_UMAP,
            file = paste0("../../output/MGD_StabMap_example/MGD_StabMap_example_embeddings_",
                          sim, "_", querySample, "_", referenceSample,
                          ".RData"))
@@ -305,11 +319,13 @@ for (sim in names(nGenes_all)) {
       names(queryLabels) = colnames(querySCE)
       
       # calculate accuracy of the query cells
-      embeddings_accuracy = sapply(embeddings_names, function(nm) {
+      embeddings_accuracy = sapply(embeddings_names_corrected, function(nm) {
+        if (is.null(get(nm))) return(NA)
+        
         print(nm)
         
         # only use cells with labels
-        data_all = get(paste0(nm, "_corrected"))
+        data_all = get(paste0(nm))
         labels_train = referenceLabels[!is.na(referenceLabels) & names(referenceLabels) %in% rownames(data_all)]
         
         knn_out = embeddingKNN(data_all,
@@ -319,17 +335,20 @@ for (sim in names(nGenes_all)) {
         
         acc = mean(isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels), na.rm = TRUE)
         
+        print(acc)
+        
         return(acc)
       }, simplify = FALSE)
       
       print(embeddings_accuracy)
       
       # calculate the resubstitution accuracy
-      embeddings_resub_accuracy = sapply(embeddings_names, function(nm) {
+      embeddings_resub_accuracy = sapply(embeddings_names_corrected, function(nm) {
+        if (is.null(get(nm))) return(NA)
         print(nm)
         
         # only use cells with labels
-        data_all = get(paste0(nm, "_corrected"))
+        data_all = get(paste0(nm))
         labels_train = referenceLabels[!is.na(referenceLabels) & names(referenceLabels) %in% rownames(data_all)]
         
         knn_out = embeddingKNN(data_all,
@@ -344,18 +363,19 @@ for (sim in names(nGenes_all)) {
       
       res = rbind(res,
                   data.frame(
-                    genes = rep(length(genes), length(embeddings_names)),
-                    type = names(embeddings_names),
+                    genes = rep(length(genes), length(embeddings_names_corrected)),
+                    type = embeddings_names_corrected,
                     Accuracy = unlist(embeddings_accuracy),
                     Accuracy_resub = unlist(embeddings_resub_accuracy),
-                    querySample = rep(querySample, length(embeddings_names)),
-                    referenceSample = rep(referenceSample, length(embeddings_names)),
+                    querySample = rep(querySample, length(embeddings_names_corrected)),
+                    referenceSample = rep(referenceSample, length(embeddings_names_corrected)),
                     Sim = sim
                   ))
       
+      print(res)
+      
       # save the results as we go:
       saveRDS(res, file = resFile)
-      saveRDS(simGenes, file = simGenesFile)
     }
   }
 }
@@ -368,14 +388,15 @@ Examine results
 ```{r}
 res2 = readRDS("../../output/MGD_StabMap_example/MGD_StabMap_example_res.Rds")
 
-typesToKeep = c("StabMap",
-                "PCA",
-                "MultiMAP",
-                "UINMF")
+typesToKeep = c("StabMap_embedding_corrected_MNN",
+                "PC_embedding_corrected_MNN",
+                "MultiMAP_embedding",
+                "UINMF_embedding")
 
-res2$type <- factor(res2$type, levels = typesToKeep)
+res3 = subset(res2, type %in% typesToKeep)
+res3$type <- factor(res3$type, levels = typesToKeep)
 
-g = ggplot(subset(res2, type %in% typesToKeep), aes(x = factor(genes), y = Accuracy)) + 
+g = ggplot(res3, aes(x = factor(genes), y = Accuracy)) + 
   theme_classic() +
   stat_summary(aes(width = 0.8, fill = type), geom = "bar", fun = "mean", position = "dodge", alpha = 0.5) +
   stat_summary(aes(group = type, colour = type), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
@@ -394,6 +415,62 @@ print(g)
 
 ggsave(g, file = "../../Figures/raw/MGD_accuracy_barplots.pdf", height = 5, width = 6)
 ```
+
+Compare relative performance with choice of downstream integration method
+
+```{r}
+typesToKeep = c("PC_embedding_corrected_Harmony",
+                "PC_embedding_corrected_MNN",
+                "PC_embedding_corrected_none",
+                "PC_embedding_corrected_Seurat",
+                "StabMap_embedding_corrected_Harmony",
+                "StabMap_embedding_corrected_MNN",
+                "StabMap_embedding_corrected_none",
+                "StabMap_embedding_corrected_Seurat")
+
+res3 = subset(res2, type %in% typesToKeep)
+res3$type <- factor(res3$type, levels = typesToKeep)
+
+res3$method <- gsub("_.*", "", res3$type)
+res3$integration <- gsub(".*_", "", res3$type)
+
+res3$id <- paste0(res3$genes, "_", res3$querySample, "_", res3$referenceSample, "_",
+                  res3$integration) 
+
+tab_PC = reshape::cast(subset(res3, method == "PC"), formula = id ~ ., value = "Accuracy")
+tab_StabMap = reshape::cast(subset(res3, method == "StabMap"), formula = id ~ ., value = "Accuracy")
+tab_diff = tab_StabMap
+tab_diff$diff = tab_StabMap$`(all)` - tab_PC$`(all)`
+tab_diff$genes <- as.numeric(gsub("_.*", "", tab_diff$id))
+tab_diff$integration <- gsub(".*_", "", tab_diff$id)
+tab_diff$integration <- factor(as.character(tab_diff$integration),
+                               levels = c("none", "Harmony", "MNN", "Seurat"))
+
+maxh = max(abs(tab_diff$diff), na.rm = TRUE)
+
+g = ggplot(tab_diff, aes(x = factor(genes), y = diff)) + 
+  theme_classic() +
+  stat_summary(aes(width = 0.8, fill = integration), geom = "bar", fun = "mean", position = "dodge", alpha = 0.5) +
+  stat_summary(aes(group = integration, colour = integration), geom = "errorbar", fun.data = "mean_se", position = "dodge", width = 0.8) +
+  xlab("Number of genes") +
+  ylab("Cell type accuracy difference:\nStabMap - PCA") +
+  labs(fill = "") +
+  labs(colour = "") +
+  theme_classic() +
+  geom_smooth(aes(group = integration, colour = integration), fill = NA, method = "loess") + 
+  theme(axis.title = element_text(size = 20)) +
+  theme(axis.text = element_text(size = 15)) +
+  scale_colour_brewer(palette = "Set2", aesthetics = c("colour", "fill")) +
+  # scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
+  theme(legend.position = "right") +
+  geom_hline(yintercept = 0) +
+  ylim(c(-1,1)*maxh) +
+  NULL
+print(g)
+
+ggsave(g, file = "../../Figures/raw/MGD_relative_accuracy_PC_StabMap_barplots.pdf", height = 5, width = 6)
+```
+
 
 Generate a network graph for illustration
 
@@ -419,17 +496,23 @@ dev.off()
 # Generate a UMAP graph for illustration
 
 ```{r}
-sim = "Sim_2"
+sim = "Sim_3"
 querySample = 29
 referenceSample = 17
 load(paste0("../../output/MGD_StabMap_example/MGD_StabMap_example_embeddings_",
             sim, "_", querySample, "_", referenceSample,
             ".RData"))
-names(embeddings_corrected_UMAP)
+# names(embeddings_corrected_UMAP)
+embeddings_corrected_UMAP = list(
+  UINMF = calculateUMAP_rnames(UINMF_embedding),
+  StabMap = calculateUMAP_rnames(StabMap_embedding_corrected_MNN),
+  PCA = calculateUMAP_rnames(PC_embedding_corrected_MNN),
+  MultiMAP = MultiMAP_embedding
+)
 
-referenceSCE = atlas[,atlas$sample %in% referenceSample]
+referenceSCE = atlas[, atlas$sample %in% referenceSample]
 
-querySCE = atlas[genes, atlas$sample %in% querySample]
+querySCE = atlas[, atlas$sample %in% querySample]
 
 # data type factor
 type = factor(ifelse(c(colnames(referenceSCE), colnames(querySCE)) %in% colnames(referenceSCE),
@@ -492,20 +575,25 @@ ggsave(g_leg_type, file = paste0("../../Figures/raw/MGD_type_umaps_leg.pdf"), he
 # Generate a UMAP graph for illustration
 
 ```{r}
-sims = c("Sim_1", "Sim_3", "Sim_4", "Sim_5")
+sims = c("Sim_1", "Sim_2", "Sim_4", "Sim_5", "Sim_6", "Sim_7")
 for (sim in sims) {
   querySample = 29
   referenceSample = 17
   load(paste0("../../output/MGD_StabMap_example/MGD_StabMap_example_embeddings_",
               sim, "_", querySample, "_", referenceSample,
               ".RData"))
-  names(embeddings_corrected_UMAP)
+  embeddings_corrected_UMAP = list(
+    UINMF = calculateUMAP_rnames(UINMF_embedding),
+    StabMap = calculateUMAP_rnames(StabMap_embedding_corrected_MNN),
+    PCA = calculateUMAP_rnames(PC_embedding_corrected_MNN),
+    MultiMAP = MultiMAP_embedding
+  )
   
-  genes = simGenes[[sim]]
+  # genes = simGenes[[sim]]
   
   referenceSCE = atlas[,atlas$sample %in% referenceSample]
   
-  querySCE = atlas[genes, atlas$sample %in% querySample]
+  querySCE = atlas[seq_len(nGenes_all[sim]),atlas$sample %in% querySample]
   
   # data type factor
   type = factor(ifelse(c(colnames(referenceSCE), colnames(querySCE)) %in% colnames(referenceSCE),
