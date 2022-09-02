@@ -1,0 +1,255 @@
+---
+title: "StabMap simulation: Mouse gastrulation data mosaic integration with Multihop data"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(MouseGastrulationData)
+library(scattermore)
+library(ggpubr)
+source("../scripts/initialise.R")
+```
+
+Helper plotting function:
+
+```{r}
+pl = function(embedding_UMAP, name, coltype = "type", facet = FALSE) {
+  ind = sample(rownames(embedding_UMAP))
+  df = data.frame(cell = ind,
+                  U1 = embedding_UMAP[ind,1],
+                  U2 = embedding_UMAP[ind,2],
+                  type = factor(type[ind]),
+                  ctype = ct_all[ind])
+  df$col = df[,coltype]
+  p = ggplot(df, aes(x = U1, y = U2, colour = col)) + 
+    geom_point(size = 0.3) + # replaced with scattermore
+    # geom_scattermore(pointsize = 2.3) +
+    theme_classic() + 
+    theme(legend.position = "none") +
+    theme(axis.text = element_blank()) +
+    theme(axis.ticks = element_blank()) +
+    xlab("") +
+    ylab("") +
+    ggtitle(name)
+  
+  if (facet) {
+    p <- p + facet_wrap(~type, nrow = 2, scales = "free")  +
+      NULL
+  }
+  
+  if (coltype == "ctype") {
+    p <- p + scale_colour_manual(values = celltype_colours)
+  }
+  
+  if (coltype == "type") {
+    # p <- p + scale_colour_manual(values = c("Query cells" = "red", "Reference cells" = "black"))
+    p <- p + scale_colour_discrete()
+  }
+  
+  return(p)
+}
+```
+
+Load data via the MouseGastrulationData Bioconductor package.
+
+```{r}
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt[mt[, "stage"] == "E8.5", "sample"]
+
+atlas = EmbryoAtlasData(type = "processed", samples = samples)
+atlas <- logNormCounts(atlas)
+
+decomp <- modelGeneVar(atlas)
+hvgs <- rownames(decomp)[decomp$mean > 0.05 & decomp$total > 0]
+length(hvgs)
+atlas <- atlas[hvgs,]
+
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+
+ct_all = atlas$celltype
+names(ct_all) <- colnames(atlas)
+
+table(atlas$sample)
+```
+
+Build simulation set up. Take the dataset and split into k groups.
+Then select up to G/k features from the HVGs and determine the p percent overlap
+between contiguous datasets. Then jointly embed the data using StabMap, and 
+record the cell type classification accuracy.
+
+```{r}
+k = 8
+nGenes_all = c(100, 200, 500, 1000)
+nCells_all = c(500, 1000, 2000)
+labels = "celltype"
+
+acc_df_all = NULL
+
+for (i in 1:5) {
+  
+  for (nCells in nCells_all) {
+    
+    for (nGenes in nGenes_all) {
+      
+      print(i)
+      print(nCells)
+      print(nGenes)
+      
+      # check there are enough features, this should be FALSE
+      ceiling((k+1)*(nGenes/2)) > length(hvgs)
+      
+      features_to_split = sample(hvgs, ceiling((k+1)*(nGenes/2)))
+      feature_split_all = split(features_to_split, rep(seq_len(k+1), length.out = length(features_to_split)))
+      feature_split = list()
+      for (kk in 1:k) {
+        feature_split[[kk]] <- unlist(feature_split_all[kk:(kk+1)])
+      }
+      names(feature_split) <- paste0("Dataset_",seq_len(k))
+      
+      atlas_cells = sample(colnames(atlas))[seq_len(nCells*8)]
+      cell_split = split(atlas_cells, rep(seq_len(k), length.out = length(atlas_cells)))
+      
+      assay_list = mapply(function(feat,cel) {
+        logcounts(atlas)[feat,cel]
+      }, feature_split, cell_split, SIMPLIFY = FALSE)
+      lapply(assay_list, dim)
+      plot(mosaicDataTopology(assay_list))
+      
+      type = setNames(rep(paste0("Dataset_",names(cell_split)), times = unlist(lapply(cell_split, length))), unlist(cell_split))
+      
+      g = mosaicDataUpSet(assay_list,
+                          text.scale = c(3,1,2,1,3,3), 
+                          point.size = 2.8, 
+                          line.size = 1,
+                          sets.x.label = "Cells",
+                          mainbar.y.label = "Features",
+                          main.bar.color = method_colours["StabMap"],
+                          set_size.numbers_size = TRUE)
+      print(g)
+      # pdf(file = paste0("../../Figures/raw/MGD_", 
+      #                   sim, "_", 
+      #                   querySample, "_",
+      #                   referenceSample,
+      #                   "_upset.pdf"), height = 4, width = 4)
+      # print(g)
+      # dev.off()
+      
+      nPCs = ifelse(nGenes <=50, 10, 50)
+      
+      StabMap_embedding = stabMap(assay_list,
+                                  reference_list = "Dataset_1",
+                                  ncomponentsReference = nPCs,
+                                  ncomponentsSubset = nPCs,
+                                  projectAll = TRUE)
+      dim(StabMap_embedding)
+      
+      # now perform cell type classification using the embedding
+      # predict cell type labels using knn with k = 5
+      referenceLabels = colData(atlas)[colnames(assay_list[["Dataset_1"]]),labels]
+      names(referenceLabels) = colnames(assay_list[["Dataset_1"]])
+      
+      queryLabels = colData(atlas)[,labels]
+      names(queryLabels) = colnames(atlas)
+      
+      # calculate accuracy of the query cells
+      # only use cells with labels
+      data_all = StabMap_embedding
+      labels_train = referenceLabels[!is.na(referenceLabels) & names(referenceLabels) %in% rownames(data_all)]
+      
+      knn_out = embeddingKNN(data_all,
+                             labels_train,
+                             type = "uniform_fixed",
+                             k_values = 5)
+      
+      acc = isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels)
+      
+      prop.acc = prop.table(table(acc, type[names(queryLabels)]), 2)["1",]
+      prop.acc[gtools::mixedorder(names(prop.acc))]
+      barplot(prop.acc[gtools::mixedorder(names(prop.acc))][-1])
+      
+      acc_df = data.frame(nCells = nCells,
+                          nGenes = nGenes,
+                          acc = prop.acc,
+                          Dataset = names(prop.acc),
+                          rep = paste0(c(nCells,nGenes,i), collapse = "_"))
+      
+      acc_df_all <- rbind(acc_df_all, acc_df)
+      
+    }
+    
+  }
+  
+}
+```
+
+Save results table
+
+```{r}
+saveRDS(acc_df_all, file = "../../output/MGD_multihop_example_df.Rds")
+```
+
+Generate plot
+
+```{r}
+library(shades)
+g = ggplot(subset(acc_df_all, Dataset != "Dataset_1"), aes(x = Dataset, y = acc)) + 
+  geom_line(aes(colour = factor(nGenes), group = rep), alpha = 0.1) + 
+  geom_point(aes(colour = factor(nGenes), group = rep), alpha = 0.1) + 
+  geom_smooth(aes(fill = factor(nGenes), group = factor(nGenes), colour = factor(nGenes)), alpha = 0.3) +
+  facet_wrap(~nCells, nrow = 1, labeller = labeller(nCells = function(x) paste0(x, " cells per dataset"))) + 
+  ylab("Accuracy") +
+  xlab("Dataset") +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  lightness(scale_colour_brewer(palette = 1, aesthetics = c("colour", "fill")), scalefac(0.7)) +
+  NULL
+
+g
+
+ggsave(g, file = "../../Figures/raw/MGD_multihop_accuracy.pdf",
+       height = 5, width = 12)
+
+g_leg = as_ggplot(get_legend(g + theme(legend.position = "right") + guides(colour = guide_legend(title = "Number of genes \n per dataset"),
+                                                                           fill = guide_legend(title = "Number of genes \n per dataset"))))
+
+g_leg
+ggsave(g_leg, file = "../../Figures/raw/MGD_multihop_accuracy_leg.pdf",
+       height = 8, width = 6)
+
+g_leg2 = as_ggplot(get_legend(g + theme(legend.position = "bottom") + guides(colour = guide_legend(title = "Number of genes \n per dataset"),
+                                                                           fill = guide_legend(title = "Number of genes \n per dataset"))))
+
+g_leg2
+ggsave(g_leg2, file = "../../Figures/raw/MGD_multihop_accuracy_leg2.pdf",
+       height = 3, width = 12)
+
+```
+
+
+Finish
+
+```{r}
+sessionInfo()
+```

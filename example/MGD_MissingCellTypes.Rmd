@@ -1,0 +1,354 @@
+---
+title: "StabMap simulation: Mouse gastrulation mosaic integration with missing cell types"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(MouseGastrulationData)
+library(scattermore)
+library(ggpubr)
+library(dplyr)
+source("../scripts/initialise.R")
+```
+
+Helper plotting function:
+
+```{r}
+pl = function(embedding_UMAP, name, coltype = "type", facet = FALSE) {
+  ind = sample(rownames(embedding_UMAP))
+  df = data.frame(cell = ind,
+                  U1 = embedding_UMAP[ind,1],
+                  U2 = embedding_UMAP[ind,2],
+                  type = factor(type[ind]),
+                  ctype = ct_all[ind])
+  df$col = df[,coltype]
+  p = ggplot(df, aes(x = U1, y = U2, colour = col)) + 
+    geom_point(size = 0.3) + # replaced with scattermore
+    # geom_scattermore(pointsize = 2.3) +
+    theme_classic() + 
+    theme(legend.position = "none") +
+    theme(axis.text = element_blank()) +
+    theme(axis.ticks = element_blank()) +
+    xlab("") +
+    ylab("") +
+    ggtitle(name)
+  
+  if (facet) {
+    p <- p + facet_wrap(~type, nrow = 2, scales = "free")  +
+      NULL
+  }
+  
+  if (coltype == "ctype") {
+    p <- p + scale_colour_manual(values = celltype_colours)
+  }
+  
+  if (coltype == "type") {
+    # p <- p + scale_colour_manual(values = c("Query cells" = "red", "Reference cells" = "black"))
+    p <- p + scale_colour_discrete()
+  }
+  
+  return(p)
+}
+```
+
+Load data via the MouseGastrulationData Bioconductor package.
+
+```{r}
+mt = MouseGastrulationData::AtlasSampleMetadata
+samples = mt[mt[, "stage"] == "E8.5", "sample"]
+
+atlas = EmbryoAtlasData(type = "processed", samples = samples)
+atlas <- atlas[,!is.na(atlas$celltype)]
+atlas <- logNormCounts(atlas)
+
+decomp <- modelGeneVar(atlas)
+hvgs <- rownames(decomp)[decomp$mean > 0.05 & decomp$total > 0]
+length(hvgs)
+atlas <- atlas[hvgs,]
+
+celltype_colours = MouseGastrulationData::EmbryoCelltypeColours
+
+ct_all = atlas$celltype
+names(ct_all) <- colnames(atlas)
+
+table(atlas$sample)
+```
+
+Build simulation set up. Take the dataset and split into 3 groups.
+Then select 3000 features from the HVGs and with 50% percent overlap
+between contiguous datasets. Remove various cell types from the bridge dataset. 
+Then jointly embed the data using StabMap, and record the cell type 
+classification accuracy.
+
+```{r}
+k = 3
+nGenes = 2000
+nCells = 3000
+labels = "celltype"
+celltypesToRemove = c("None", sort(names(table(atlas$celltype)[table(atlas$celltype) >= 100])))
+
+acc_prop_df_all = NULL
+
+for (i in 1:5) {
+  
+  print(i)
+  print(nCells)
+  print(nGenes)
+  
+  # check there are enough features, this should be FALSE
+  ceiling((k+1)*(nGenes/2)) > length(hvgs)
+  
+  features_to_split = sample(hvgs, ceiling((k+1)*(nGenes/2)))
+  feature_split_all = split(features_to_split, rep(seq_len(k+1), length.out = length(features_to_split)))
+  feature_split = list()
+  for (kk in 1:k) {
+    feature_split[[kk]] <- unlist(feature_split_all[kk:(kk+1)])
+  }
+  names(feature_split) <- paste0("Dataset_",seq_len(k))
+  
+  atlas_cells = sample(colnames(atlas))[seq_len(nCells*k)]
+  cell_split_orig = split(atlas_cells, rep(seq_len(k), length.out = length(atlas_cells)))
+  
+  for (celltypeToRemove in celltypesToRemove) {
+    
+    print(celltypeToRemove)
+    
+    cell_split = cell_split_orig
+    
+    # Remove celltype from the middle dataset
+    ct_cells = colnames(atlas)[atlas$celltype == celltypeToRemove]
+    cell_split[[2]] <- setdiff(cell_split[[2]], ct_cells)
+    
+    assay_list = mapply(function(feat,cel) {
+      logcounts(atlas)[feat,cel]
+    }, feature_split, cell_split, SIMPLIFY = FALSE)
+    lapply(assay_list, dim)
+    plot(mosaicDataTopology(assay_list))
+    
+    type = setNames(rep(paste0("Dataset_",names(cell_split)), times = unlist(lapply(cell_split, length))), unlist(cell_split))
+    
+    g = mosaicDataUpSet(assay_list,
+                        text.scale = c(3,1,2,1,3,3), 
+                        point.size = 2.8, 
+                        line.size = 1,
+                        sets.x.label = "Cells",
+                        mainbar.y.label = "Features",
+                        main.bar.color = method_colours["StabMap"],
+                        set_size.numbers_size = TRUE)
+    print(g)
+    # pdf(file = paste0("../../Figures/raw/MGD_", 
+    #                   sim, "_", 
+    #                   querySample, "_",
+    #                   referenceSample,
+    #                   "_upset.pdf"), height = 4, width = 4)
+    # print(g)
+    # dev.off()
+    
+    nPCs = ifelse(nGenes <= 50, 10, 50)
+    
+    StabMap_embedding = stabMap(assay_list,
+                                reference_list = "Dataset_2",
+                                ncomponentsReference = nPCs,
+                                ncomponentsSubset = nPCs)
+    dim(StabMap_embedding)
+    
+    StabMap_embedding_all = stabMap(assay_list,
+                                    ncomponentsReference = nPCs,
+                                    ncomponentsSubset = nPCs)
+    dim(StabMap_embedding_all)
+    StabMap_embedding_all <- reWeightEmbedding(StabMap_embedding_all)
+    
+    # now perform cell type classification using the embedding
+    # predict cell type labels using knn with k = 5
+    referenceLabels = colData(atlas)[colnames(assay_list[["Dataset_1"]]),labels]
+    names(referenceLabels) = colnames(assay_list[["Dataset_1"]])
+    
+    queryLabels = colData(atlas)[colnames(assay_list[["Dataset_3"]]),labels]
+    names(queryLabels) = colnames(assay_list[["Dataset_3"]])
+    
+    # calculate accuracy of the query cells
+    labels_train = referenceLabels
+    
+    data = StabMap_embedding
+    
+    knn_out = embeddingKNN(data,
+                           labels_train,
+                           type = "uniform_fixed",
+                           k_values = 5)
+    
+    acc = isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels)
+    
+    # prop.acc = prop.table(table(acc, type[names(queryLabels)]), 2)["1",]
+    # prop.acc[gtools::mixedorder(names(prop.acc))]
+    # barplot(prop.acc[gtools::mixedorder(names(prop.acc))][-1])
+    acc_prop = tapply(acc, queryLabels, mean)
+    
+    acc_prop_df = data.frame(celltypeToRemove = celltypeToRemove,
+                             celltype = names(acc_prop),
+                             acc = acc_prop
+                             # method = "Dataset_2"
+    )
+    
+    # acc_prop_df_all <- rbind(acc_prop_df_all, acc_prop_df)
+    
+    # Now for the alternative stabmap output
+    
+    data = StabMap_embedding_all
+    
+    knn_out = embeddingKNN(data,
+                           labels_train,
+                           type = "uniform_fixed",
+                           k_values = 5)
+    
+    acc = isEqual(knn_out[names(queryLabels),"predicted_labels"], queryLabels)
+    
+    # prop.acc = prop.table(table(acc, type[names(queryLabels)]), 2)["1",]
+    # prop.acc[gtools::mixedorder(names(prop.acc))]
+    # barplot(prop.acc[gtools::mixedorder(names(prop.acc))][-1])
+    acc_prop = tapply(acc, queryLabels, mean)
+    
+    acc_prop_df$acc_all = acc_prop
+    # acc_prop_df = data.frame(celltypeToRemove = celltypeToRemove,
+    #                          celltype = names(acc_prop),
+    #                          acc = acc_prop,
+    #                          method = "All")
+    
+    acc_prop_df_all <- rbind(acc_prop_df_all, acc_prop_df)
+    
+  }
+}
+```
+
+Save results table
+
+```{r}
+saveRDS(acc_prop_df_all, file = "../../output/MGD_MissingCellTypes_df.Rds")
+```
+
+Generate plot
+
+```{r}
+# library(shades)
+acc_prop_df_all$acc_diff = acc_prop_df_all$acc_all - acc_prop_df_all$acc
+
+acc_prop_df_all_means = acc_prop_df_all %>%
+  group_by(celltypeToRemove, celltype) %>%
+  dplyr::summarise(acc_diff = mean(acc_diff))
+
+g = ggplot(subset(acc_prop_df_all_means, celltype %in% celltypesToRemove), aes(x = celltype, y = celltypeToRemove)) + 
+  geom_tile(aes(fill = acc_diff)) + # positive means better accuracy when using all reference
+  # geom_tile(aes(fill = acc)) + # 
+  # facet_wrap(~method) +
+  # geom_line(aes(colour = factor(nGenes), group = rep), alpha = 0.1) + 
+  # geom_point(aes(colour = factor(nGenes), group = rep), alpha = 0.1) + 
+  # geom_smooth(aes(fill = factor(nGenes), group = factor(nGenes), colour = factor(nGenes)), alpha = 0.3) +
+  # facet_wrap(~nCells, nrow = 1, labeller = labeller(nCells = function(x) paste0(x, " cells per dataset"))) + 
+  # ylab("Accuracy") +
+  # xlab("Dataset") +
+  theme_classic() + 
+  coord_fixed() +
+  xlab("") +
+  ylab("Removed cell type") +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  guides(fill = guide_colourbar(title = "Mean difference\nin accuracy")) +
+  # lightness(scale_colour_brewer(palette = 1, aesthetics = c("colour", "fill")), scalefac(0.7)) +
+  NULL
+
+g
+
+ggsave(g, file = "../../Figures/raw/MGD_MissingCellType_accuracy_heatmap.pdf",
+       height = 8, width = 8)
+
+g_leg = as_ggplot(get_legend(g + theme(legend.position = "right")))
+
+g_leg
+ggsave(g_leg, file = "../../Figures/raw/MGD_MissingCellType_accuracy_heatmap_leg.pdf",
+       height = 8, width = 6)
+
+g_leg2 = as_ggplot(get_legend(g + theme(legend.position = "bottom")))
+
+g_leg2
+ggsave(g_leg2, file = "../../Figures/raw/MGD_MissingCellType_accuracy_heatmap_leg2.pdf",
+       height = 3, width = 12)
+
+
+# scatterplot per cell type of accuracy with and without removing the ct
+celltypesToRemoveSub <- sort(setdiff(celltypesToRemove, "None"))
+acc_prop_df_all_sub = subset(acc_prop_df_all, celltypeToRemove == "None")
+
+ct_acc_df = data.frame(
+  celltype = celltypesToRemoveSub,
+  acc = tapply(acc_prop_df_all_sub$acc, acc_prop_df_all_sub$celltype, mean)[celltypesToRemoveSub],
+  acc_all = tapply(acc_prop_df_all_sub$acc_all, acc_prop_df_all_sub$celltype, mean)[celltypesToRemoveSub]
+)
+
+ct_acc_df$acc_rm = as.numeric(sapply(ct_acc_df$celltype, function(ct) {
+  mean(subset(acc_prop_df_all, celltypeToRemove == ct & celltype == ct)[,"acc"])
+}, simplify = TRUE))
+ct_acc_df$acc_rm_all = as.numeric(sapply(ct_acc_df$celltype, function(ct) {
+  mean(subset(acc_prop_df_all, celltypeToRemove == ct & celltype == ct)[,"acc_all"])
+}, simplify = TRUE))
+
+g = ggplot(subset(ct_acc_df, celltype %in% celltypesToRemove)) + 
+  geom_point(aes(x = acc, y = acc_rm, colour = celltype, shape = "Dataset 2")) + 
+  geom_smooth(aes(x = acc, y = acc_rm), method = "lm", colour = "grey", fill = NA, alpha = 0.5) +
+  
+  geom_point(aes(x = acc_all, y = acc_rm_all, colour = celltype, shape = "All")) + 
+  geom_smooth(aes(x = acc_all, y = acc_rm_all), method = "lm", colour = "blue", fill = NA, alpha = 0.5) +
+  
+  geom_abline(slope = 1, intercept = 0, linetype = "dotted") + 
+  scale_colour_manual(values = celltype_colours[celltypesToRemoveSub]) +
+  scale_shape_manual(values = c("Dataset 2" = 16, "All" = 17)) +
+  scale_fill_manual(values = c("Dataset 2" = "grey", "All" = "blue")) +
+  theme_classic() +
+  xlab("Accuracy including cell type") +
+  ylab("Accuracy removing cell type") +
+  xlim(c(0,1)) +
+  ylim(c(0,1)) +
+  theme(legend.position = "none") +
+  guides(colour = guide_legend(title = "")) + 
+  guides(shape = guide_legend(title = "", override.aes = list(colour = c("grey", "blue")))) +
+  NULL
+
+g
+
+ggsave(g, file = "../../Figures/raw/MGD_MissingCellType_accuracy_scatterplot.pdf",
+       height = 6, width = 6)
+
+g_leg = as_ggplot(get_legend(g + theme(legend.position = "right")))
+
+g_leg
+ggsave(g_leg, file = "../../Figures/raw/MGD_MissingCellType_accuracy_scatterplot_leg.pdf",
+       height = 8, width = 4)
+
+```
+
+
+Finish
+
+```{r}
+sessionInfo()
+```

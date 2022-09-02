@@ -1,0 +1,372 @@
+---
+title: "StabMap simulation: PBMC disjoint mosaic integration with Multihop data"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(nord) # for colours
+library(ggpubr) # for extracting legends
+library(lisi) # installed via devtools::install_github("immunogenomics/LISI")
+library(scattermore)
+source("../scripts/initialise.R")
+```
+
+```{r}
+modality_colours = setNames(nord(palette = "algoma_forest", 5)[c(1,3,4)],
+                            c("Multiome", "ECCITESeq", "CYTOF"))
+```
+
+Load data from previous generating scripts. These are in the form of 
+SingleCellExperiment objects.
+
+10X Multiome data. Rename CD7 to unmatch the transcript name from protein.
+
+```{r}
+Multiome = readRDS("../../PBMC_Multiome/PBMC_multiome_sce.Rds")
+Multiome
+rnames = rownames(Multiome)
+rnames[rnames == "CD7"] <- "RNA_CD7"
+rnames[rnames == "MS4A1"] <- "RNA_MS4A1"
+rownames(Multiome) <- rnames
+```
+
+CITE-seq (ECCITE-Seq) data. Rename the first appearing names as RNA to avoid
+non-unique rownames.
+
+```{r}
+ECCITESeq = readRDS("../../ECCITEseq/eccite_sce.Rds")
+ECCITESeq
+rnames = rownames(ECCITESeq)
+rnames_dup = rnames[duplicated(rnames)]
+for (rnm in rnames_dup) {
+  rnames[rnames == rnm & !duplicated(rnames)] <- paste0("RNA_", rnm)
+}
+any(duplicated(rnames))
+rownames(ECCITESeq) <- rnames
+```
+
+CYTOF data. Rename protein to match. Add column names. Select the reference
+sample with the largest number of cells.
+
+```{r}
+CYTOF = readRDS("../../CYTOF/cytof_PBMC_sce.Rds")
+CYTOF
+colnames(CYTOF) <- paste0("CYTOF_cell",seq_len(ncol(CYTOF)))
+
+protName = c("CD20" = "MS4A1",
+             "HLA-DR" = "MHCII (HLA-DR)")
+rnames = setNames(rownames(CYTOF), rownames(CYTOF))
+rnames[names(protName)] <- protName
+rownames(CYTOF) <- unname(rnames)
+
+nCells_CYTOF = unclass(table(CYTOF$sample_id, CYTOF$population_id))
+sampleToKeep = grep("Reference", names(sort(rowSums(nCells_CYTOF), decreasing = TRUE)), value = TRUE)[1]
+
+CYTOF <- CYTOF[,CYTOF$sample_id == sampleToKeep]
+```
+
+Examine the mosaic data topology.
+
+```{r}
+assay_list = lapply(list(CYTOF = logcounts(CYTOF),
+                         ECCITESeq = logcounts(ECCITESeq),
+                         Multiome = logcounts(Multiome)),as.matrix)
+
+# this should be empty
+intersect(intersect(rownames(Multiome), rownames(ECCITESeq)), rownames(CYTOF))
+
+intersect(rownames(ECCITESeq), rownames(CYTOF))
+setdiff(rownames(ECCITESeq), rownames(CYTOF))
+setdiff(rownames(CYTOF), rownames(ECCITESeq))
+
+any(duplicated(unlist(lapply(assay_list, colnames))))
+lapply(assay_list, function(x) any(duplicated(rownames(x))))
+lapply(assay_list, function(x) head(colnames(x)))
+
+modality = setNames(rep(names(assay_list), times = lapply(assay_list, ncol)),
+                    unlist(lapply(assay_list, colnames)))
+```
+
+Perform StabMap, employing multi-hop from CYTOF dataset to ECCITE dataset 
+finally to Multiome dataset, and vice versa, and finally using both together.
+
+```{r}
+out_CYTOF = stabMap(assay_list,
+                    reference_list = c("CYTOF"),
+                    projectAll = TRUE,
+                    ncomponentsReference = 10,
+                    restrictFeatures = TRUE,
+                    plot = FALSE)
+
+out_Multiome = stabMap(assay_list,
+                    reference_list = c("Multiome"),
+                    projectAll = TRUE,
+                    plot = FALSE,
+                    restrictFeatures = TRUE)
+
+out_joint = stabMap(assay_list,
+                    reference_list = c("CYTOF", "Multiome"),
+                    ncomponentsReference = c(CYTOF = 10, Multiome = 50),
+                    projectAll = TRUE,
+                    plot = FALSE,
+                    restrictFeatures = TRUE)
+
+# out_joint = cbind(out_CYTOF, out_Multiome[rownames(out_CYTOF),])
+out_joint = reWeightEmbedding(out_joint, weights = c("CYTOF_PC" = 1, "Multiome_PC" = 1))
+
+out_joint_corrected = reducedMNN_batchFactor(
+  as.matrix(out_joint), batchFactor = modality[rownames(out_joint)])
+out_CYTOF_corrected = reducedMNN_batchFactor(as.matrix(out_CYTOF), batchFactor = modality[rownames(out_CYTOF)])
+out_Multiome_corrected = reducedMNN_batchFactor(as.matrix(out_Multiome), batchFactor = modality[rownames(out_Multiome)])
+
+out_joint_UMAP_corrected = calculateUMAP_rnames(out_joint_corrected)
+out_CYTOF_UMAP_corrected = calculateUMAP_rnames(out_CYTOF_corrected)
+out_Multiome_UMAP_corrected = calculateUMAP_rnames(out_Multiome_corrected)
+
+out_joint_df = data.frame(cell = names(modality),
+                          modality = modality,
+                          UMAP1_CYTOF_corrected = out_CYTOF_UMAP_corrected[names(modality),1],
+                          UMAP2_CYTOF_corrected = out_CYTOF_UMAP_corrected[names(modality),2],
+                          
+                          UMAP1_Multiome_corrected = out_Multiome_UMAP_corrected[names(modality),1],
+                          UMAP2_Multiome_corrected = out_Multiome_UMAP_corrected[names(modality),2],
+                          
+                          UMAP1_joint_corrected = out_joint_UMAP_corrected[names(modality),1],
+                          UMAP2_joint_corrected = out_joint_UMAP_corrected[names(modality),2],
+                          PC1_uncorrected = out_joint[names(modality),1],
+                          PC2_uncorrected = out_joint[names(modality),2])
+ctype_joint = c(setNames(as.character(Multiome$celltype), colnames(Multiome)),
+                setNames(as.character(CYTOF$population_id), colnames(CYTOF)),
+                setNames(rep("Unknown", ncol(ECCITESeq)), colnames(ECCITESeq)))
+out_joint_df$celltype <- ctype_joint[rownames(out_joint_df)]
+out_joint_df$sample_id <- colData(CYTOF)[rownames(out_joint_df),"sample_id"]
+out_joint_df <- permuteRows(out_joint_df)
+
+broad_celltypes = c("CD4 T-cells" = "CD4 T", "CD8 T-cells" = "CD8 T", "CD56 (bright) NK cells" = "NK", "classical monocytes" = "Monocyte", "memory CD4 T cells" = "CD4 T", "intermediate monocytes" = "Monocyte", "monocytes" = "Monocyte", "NK cells" = "NK", "B-cells IgM-" = "B", "non-classical monocytes" = "Monocyte", "naive B cells" = "B", "CD56 (dim) NK cells" = "NK", "memory B cells" = "B", "Unknown" = "Unknown", "naive CD4 T cells" = "CD4 T", "naive CD8 T cells" = "CD8 T", "myeloid DC" = "DC", "plasmacytoid DC" = "DC", "DC" = "DC", "B-cells IgM+" = "B", "effector CD8 T cells" = "CD8 T", "MAIT T cells" = "MAIT T", "surface-" = "Surface -")
+out_joint_df$broad_celltype = broad_celltypes[out_joint_df$celltype]
+```
+
+
+```{r}
+# export some plots:
+g1 = ggplot(out_joint_df, aes(x = modality)) + 
+  # geom_bar(fill = "gray") +
+  geom_bar(aes(fill = modality)) + 
+  scale_fill_manual(values = modality_colours) +
+  ylab("Number of cells") +
+  theme_classic() +
+  xlab("Modality") +
+  theme(legend.position = "none") +
+  theme(axis.text = element_text(size = 15)) +
+  theme(axis.title = element_text(size = 20)) +
+  NULL
+g1
+ggsave(g1, file = paste0("../../Figures/raw/PBMC_multihop_numCells.pdf"),
+       width = 5, height = 4)
+
+g2 = mosaicDataUpSet(assay_list,
+                     text.scale = c(3,1,2,1,3,3), 
+                     point.size = 2.8, 
+                     line.size = 1,
+                     sets.x.label = "Cells",
+                     mainbar.y.label = "Features",
+                     main.bar.color = method_colours["StabMap"],
+                     set_size.numbers_size = TRUE,
+                     keep.order = TRUE,
+                     sets = names(assay_list))
+g2
+pdf(paste0("../../Figures/raw/PBMC_multihop_upset.pdf"), 
+    width = 5, height = 5)
+print(g2)
+dev.off()
+  
+graph = mosaicDataTopology(assay_list)
+V(graph)$size = 70
+V(graph)$color = modality_colours[V(graph)$name]
+V(graph)$label.color = c("white", "black", "black")
+plot(graph, layout = layout.drl)
+  
+pdf(paste0("../../Figures/raw/PBMC_multihop_network.pdf"), 
+    width = 6, height = 6)
+plot(graph, layout = layout.drl)
+dev.off()
+```
+
+
+```{r}
+g3List = sapply(c("CYTOF", "Multiome", "joint"), function(nm){
+  g3_joint = ggplot(out_joint_df, aes(x = get(paste0("UMAP1_", nm, "_corrected")), y = get(paste0("UMAP2_", nm, "_corrected")))) + 
+  geom_scattermore(aes(colour = modality), pointsize = 1.3, alpha = 0.5) +
+  scale_colour_manual(values = modality_colours) +
+  theme_classic() + 
+  theme(legend.position = "bottom") +
+  theme(axis.ticks = element_blank()) +
+  theme(axis.text = element_blank()) +
+  guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) +
+    ggtitle(nm) +
+  coord_fixed() +
+  xlab("UMAP1") + 
+  ylab("UMAP2") +
+  labs(colour = "") + 
+  NULL
+}, simplify = FALSE)
+
+g4List = sapply(c("CYTOF", "Multiome", "joint"), function(nm){
+    ggplot(subset(out_joint_df, broad_celltype != "Unknown"), 
+           aes(x = get(paste0("UMAP1_", nm, "_corrected")),
+               y = get(paste0("UMAP2_", nm, "_corrected")))) + 
+  geom_scattermore(aes(colour = broad_celltype), pointsize = 1.3, alpha = 0.5) +
+  # scale_colour_nord(palette = "lumina") +
+  # scale_colour_manual(values = colors) +
+  scale_colour_brewer(palette = "Set1") +
+  theme_classic() + 
+  theme(legend.position = "right",) +
+  theme(axis.ticks = element_blank()) +
+  theme(axis.text = element_blank()) +
+  guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1),
+                               ncol = 1)) +
+  coord_fixed() +
+  xlab("UMAP1") + 
+  ylab("UMAP2") +
+  labs(colour = "") +
+  NULL
+}, simplify = FALSE)
+
+wrap_plots(c(g3List, g4List))  + plot_layout(nrow = 2, ncol = 3)
+```
+
+Export these plots
+
+```{r}
+g = g3List[["CYTOF"]] + 
+  theme(legend.position = "none") +
+  ggtitle("Reference dataset: CYTOF")
+ggsave(g, file = "../../Figures/raw/PBMC_multihop_CYTOF_modality.pdf",
+       height = 6, width = 6)
+g = g3List[["joint"]] + 
+  theme(legend.position = "none") +
+  ggtitle("Reference datasets: CYTOF and Multiome")
+ggsave(g, file = "../../Figures/raw/PBMC_multihop_both_modality.pdf",
+       height = 6, width = 6)
+g = g3List[["Multiome"]] + 
+  theme(legend.position = "none") +
+  ggtitle("Reference dataset: Multiome")
+ggsave(g, file = "../../Figures/raw/PBMC_multihop_Multiome_modality.pdf",
+       height = 6, width = 6)
+g = g4List[["CYTOF"]] + 
+  theme(legend.position = "none") +
+  ggtitle("")
+ggsave(g, file = "../../Figures/raw/PBMC_multihop_CYTOF_celltype.pdf",
+       height = 6, width = 6)
+g = g4List[["joint"]] + 
+  theme(legend.position = "none") +
+  ggtitle("")
+ggsave(g, file = "../../Figures/raw/PBMC_multihop_both_celltype.pdf",
+       height = 6, width = 6)
+g = g4List[["Multiome"]] + 
+  theme(legend.position = "none") +
+  ggtitle("")
+ggsave(g, file = "../../Figures/raw/PBMC_multihop_Multiome_celltype.pdf",
+       height = 6, width = 6)
+
+g_leg = as_ggplot(get_legend(g3List[["CYTOF"]] + theme(legend.position = "right")))
+g_leg
+ggsave(g_leg, 
+       file = paste0("../../Figures/raw/PBMC_multihop_UMAP_modality_legend.pdf"),
+       height = 1, width = 3)
+
+g_leg = as_ggplot(get_legend(g4List[["CYTOF"]]))
+g_leg
+ggsave(g_leg, 
+       file = paste0("../../Figures/raw/PBMC_multihop_UMAP_celltype_legend.pdf"),
+       height = 3, width = 3)
+```
+
+# Report LISI as measure of mixing
+
+```{r}
+lisi_cells = rownames(subset(out_joint_df,
+                             modality %in% c("CYTOF", "Multiome")))
+perpval = 100
+
+lisi_values = compute_lisi(out_CYTOF_corrected[lisi_cells,],
+                           out_joint_df[lisi_cells,],
+                           c("modality", "broad_celltype"),
+                           perplexity = perpval)
+colnames(lisi_values) <- c("modality_CYTOF", "celltype_CYTOF")
+
+lisi_values_Multiome = compute_lisi(out_Multiome_corrected[lisi_cells,],
+                                    out_joint_df[lisi_cells,],
+                                    c("modality", "broad_celltype"),
+                           perplexity = perpval)
+lisi_values$modality_Multiome <- lisi_values_Multiome$modality
+lisi_values$celltype_Multiome <- lisi_values_Multiome$broad_celltype
+
+lisi_values_both = compute_lisi(out_joint_corrected[lisi_cells,],
+                                out_joint_df[lisi_cells,],
+                                c("modality", "broad_celltype"),
+                           perplexity = perpval)
+lisi_values$modality_both <- lisi_values_both$modality
+lisi_values$celltype_both <- lisi_values_both$broad_celltype
+
+lisi_values_long = tidyr::pivot_longer(lisi_values,
+                                       cols = colnames(lisi_values))
+lisi_values_long$type <- ifelse(grepl("modality", lisi_values_long$name),
+                                "Modality","Celltype")
+lisi_values_long$reference <- gsub("modality_|celltype_", "", lisi_values_long$name)
+lisi_values_long$name <- factor(lisi_values_long$name, levels = c(outer(c("celltype_", "modality_"),
+                                                                       c("CYTOF", "Multiome", "both"),
+                                                                      paste0)))
+
+g = ggplot(lisi_values_long, aes(x = name, y = value)) + 
+  geom_violin(aes(fill = reference), draw_quantiles = c(0.5), scale = "width") + 
+  facet_wrap(~type, scales = "free", ncol = 2) + 
+  theme_classic() + 
+  theme(strip.background = element_rect(colour = NA)) +
+  theme(strip.text = element_text(size = 14)) +
+  xlab("") + 
+  ylab("LISI value") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = c(modality_colours[c("CYTOF", "Multiome")], "both" = "grey"), 
+                    labels = c("CYTOF", "Multiome", "Both"), drop = TRUE) +
+  guides(fill = guide_legend(title = "Reference dataset")) +
+  scale_x_discrete(labels = function(x) gsub("modality_|celltype_", "", ifelse(grepl("both", x), "Both", x))) +
+  NULL
+g
+
+ggsave(g, file = "../../Figures/raw/PBMC_multihop_LISI_violin.pdf",
+       height = 3, width = 6)
+
+g_leg = as_ggplot(get_legend(g + theme(legend.position = "bottom")))
+g_leg
+ggsave(g_leg, file = "../../Figures/raw/PBMC_multihop_LISI_violin_leg.pdf",
+       height = 1, width = 6)
+
+```
+
+Finish
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,108 @@
+---
+title: "StabMap: Generate PBMC CYTOF data object"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+<!-- TODO- Use ABnames package from Helen Lindsay (Raphael Gottardo group) to  -->
+<!-- match the antibody names -->
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(HDCytoData)
+source("../scripts/initialise.R")
+```
+
+Load data from Bodenmiller (2012) via the HDCytoData package. This dataset 
+includes two conditions of stimulated and unstimulated PBMCs from healthy 
+individuals.
+
+```{r}
+d_SE = Bodenmiller_BCR_XL_SE(metadata = FALSE)
+d_SE
+```
+
+Perform some exploration of this data.
+
+```{r}
+dim(d_SE)
+assay(d_SE[1:5,1:5], "exprs")
+colnames(d_SE)
+head(rowData(d_SE))
+table(rowData(d_SE)$group_id)
+table(rowData(d_SE)$group_id, rowData(d_SE)$patient_id)
+```
+
+Extract the CYTOF data matrix, transpose to match typical use in scRNA-seq
+studies. Remove the variables Time, Cell_length, DNA-1 and DNA-2.
+
+```{r}
+vars_to_keep = rownames(subset(colData(d_SE), marker_class != "none"))
+exprs_cytof = t(assay(d_SE, "exprs")[,vars_to_keep])
+class(exprs_cytof)
+dim(exprs_cytof)
+
+sce.cytof = SingleCellExperiment(assays = list(counts = exprs_cytof))
+```
+
+Add cell metadata
+
+```{r}
+meta = rowData(d_SE)
+
+colData(sce.cytof) <- meta
+```
+
+Perform some exploration of this data, first perform transformation as 
+suggested by the vignette, i.e. asinh with cofactor 5.
+
+```{r}
+# Normalisation
+logcounts(sce.cytof) <- asinh(counts(sce.cytof)/5)
+
+# PCA
+sce.cytof <- scater::runPCA(sce.cytof, ncomponents = 10)
+
+# UMAP
+sce.cytof <- scater::runUMAP(sce.cytof, dimred="PCA", n_neighbors = 25, min_dist = 0.3)
+
+plotPCA(sce.cytof, point_size=0.5, point_alpha=1, colour_by = "group_id")
+
+plotUMAP(sce.cytof, point_size=0.5, point_alpha=1)
+plotUMAP(sce.cytof, point_size=0.5, point_alpha=1, colour_by = "population_id")
+plotUMAP(sce.cytof, point_size=0.5, point_alpha=1, colour_by = "sample_id")
+plotUMAP(sce.cytof, point_size=0.5, point_alpha=1, colour_by = "patient_id")
+plotUMAP(sce.cytof, point_size=0.5, point_alpha=1, colour_by = "group_id")
+```
+
+Save the object as RDS.
+
+```{r}
+# save the object as RDS
+saveRDS(sce.cytof, file = "../../CYTOF/cytof_PBMC_sce.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```
