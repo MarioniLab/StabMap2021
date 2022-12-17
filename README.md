@@ -26,6 +26,11 @@ generate figure panels:
     - `PBMC_CYTOF_generate.Rmd`
     - `PBMC_ECCITE_generate.Rmd`
     - `PBMC_Multihop_example.Rmd`
+- Breast cancer IMC, CITE-Seq and Xenium example:
+    - `BreastCancer_IMC_generate.Rmd`
+    - `BreastCancer_CITE_generate.Rmd`
+    - `BreastCancer_Xenium_generate.Rmd`
+    - `BreastCancer_Multihop_example.Rmd`
 - Mouse Gastrulation chimera and seqFISH analysis:
     - `MGD_seqFISH_generate.Rmd`
     - `MGD_chimera_StabMap_SeqFISH_example.Rmd`
@@ -41,5 +46,5 @@ for analysis output files.
 
 ## Contact
 
-shila.ghazanfar \<at\> cruk.cam.ac.uk or marioni \<at\> ebi.ac.uk
+shila.ghazanfar \<at\> cruk.cam.ac.uk, shila.ghazanfar  \<at\> sydney.edu.au, or marioni \<at\> ebi.ac.uk
 
