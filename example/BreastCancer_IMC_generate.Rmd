@@ -1,0 +1,100 @@
+---
+title: "StabMap: Generate Breast Cancer IMC dataset"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+source("../scripts/initialise.R")
+library(igraph)
+library(gtools)
+library(fst)
+```
+
+Data is downloaded from zenodo link https://zenodo.org/record/6036188#.Y2Cu8exBxqs 
+from Danenberg et al (https://www.nature.com/articles/s41588-022-01041-y),
+saved locally into BreastCancerIMC folder
+
+# Load clinical data
+
+We subset patients according to ER+ and HER2 status.
+
+```{r}
+clin = read_fst("../../BreastCancerIMC/IMCClinical.fst")
+
+mb_keep = subset(clin, ERStatus == "pos" & 
+                   PAM50 == "HER2" & 
+                   !is.na(PAM50))$metabric_id
+
+length(mb_keep)
+```
+
+# Load IMC data
+
+Subset the IMC detected cells to those that correspond to tumours and belong
+to the selected patients.
+
+```{r}
+imc_raw = read.csv("../../BreastCancerIMC/SingleCells.csv", header = TRUE, row.names = NULL)
+
+imc = subset(imc_raw,
+             metabric_id %in% mb_keep & 
+               is_tumour == 1)
+
+rownames(imc) <- paste0(imc$metabric_id, "_", imc$ImageNumber, "_", imc$ObjectNumber)
+
+dim(imc)
+```
+
+# Create SCE object for samples
+
+Split proteins from other variables
+
+```{r}
+not_prots = c("ImageNumber","ObjectNumber","metabric_id", "cellPhenotype",
+              "is_epithelial", "is_tumour" ,"is_normal", "is_dcis",
+              "is_interface","is_perivascular", "is_hotAggregate",
+              "DNA1","DNA2","Location_Center_X", "Location_Center_Y",
+              "AreaShape_Area") 
+
+imc_prots = setdiff(colnames(imc), not_prots)
+
+imc_exprs = imc[,imc_prots]
+colnames(imc_exprs) <- toupper(imc_prots)
+
+sce = SingleCellExperiment(assays = list(logcounts = t(imc_exprs)),
+                           colData = imc[,not_prots],
+                           reducedDims = list(coords = imc[,c("Location_Center_X", "Location_Center_Y")]))
+
+sce
+```
+
+```{r}
+saveRDS(sce, file = "../../BreastCancerIMC/imc_sce.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```

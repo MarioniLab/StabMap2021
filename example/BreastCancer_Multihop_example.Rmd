@@ -1,0 +1,580 @@
+---
+title: "StabMap analysis: Breast cancer multi-hop mosaic integration"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+library(nord) # for colours
+library(ggpubr) # for extracting legends
+library(lisi) # installed via devtools::install_github("immunogenomics/LISI")
+library(scattermore)
+source("../scripts/initialise.R")
+source("../scripts/neighbourSegments.R")
+```
+
+```{r}
+modality_colours = setNames(nord(palette = "algoma_forest", 5)[c(1,3,4)],
+                            c("IMC", "CITESeq", "Xenium"))
+```
+
+Load data from previous generating scripts. These are in the form of 
+SingleCellExperiment objects.
+
+IMC data
+
+```{r}
+IMC = readRDS("../../BreastCancerIMC/imc_sce.Rds")
+rnames = paste0("protein_", rownames(IMC))
+rownames(IMC) <- rnames
+
+IMC
+```
+
+CITE-seq data. This object is obtained via CiteFuse where the ADT is saved 
+as altExps.
+
+```{r}
+CITESeq = readRDS("../../BreastCancerCITE/cite_sce.Rds")
+
+rownames(altExp(CITESeq, "ADT")) <- paste0("protein_",rownames(altExp(CITESeq, "ADT")))
+
+CITESeq_concat_counts <- rbind(counts(CITESeq), assay(altExp(CITESeq, "ADT"), "counts"))
+CITESeq_concat = SingleCellExperiment(assays = list(counts = CITESeq_concat_counts),
+                                   colData = colData(CITESeq))
+
+CITESeq_concat = logNormCounts(CITESeq_concat)
+CITESeq_concat
+```
+
+Xenium data. Restrict down to the gene expression features.
+
+```{r}
+Xenium = readRDS("../../BreastCancerXenium/xenium_sce.Rds")
+Xenium <- Xenium[rowData(Xenium)$Type == "Gene Expression",]
+Xenium <- Xenium[,colSums(counts(Xenium))>30]
+Xenium = logNormCounts(Xenium)
+Xenium
+```
+
+Examine the mosaic data topology.
+
+```{r}
+assay_list = lapply(list(IMC = logcounts(IMC),
+                         CITESeq = logcounts(CITESeq_concat),
+                         Xenium = logcounts(Xenium)),as.matrix)
+
+# this should be empty, and indeed it is
+intersect(intersect(rownames(IMC), rownames(CITESeq_concat)), rownames(Xenium))
+
+intersect(rownames(IMC), rownames(CITESeq_concat))
+intersect(rownames(IMC), rownames(Xenium))
+intersect(rownames(CITESeq_concat), rownames(Xenium))
+
+any(duplicated(unlist(lapply(assay_list, colnames))))
+lapply(assay_list, function(x) any(duplicated(rownames(x))))
+lapply(assay_list, function(x) head(colnames(x)))
+
+modality = setNames(rep(names(assay_list), times = lapply(assay_list, ncol)),
+                    unlist(lapply(assay_list, colnames)))
+```
+
+Perform StabMap, employing multi-hop from IMC dataset to CITE-seq dataset 
+finally to Xenium dataset, and vice versa, and finally using both together.
+
+```{r}
+out_IMC = stabMap(assay_list,
+                  reference_list = c("IMC"),
+                  projectAll = TRUE,
+                  ncomponentsReference = 10,
+                  restrictFeatures = TRUE,
+                  plot = FALSE)
+
+out_Xenium = stabMap(assay_list,
+                    reference_list = c("Xenium"),
+                    projectAll = TRUE,
+                    plot = FALSE,
+                    restrictFeatures = TRUE)
+
+# out_joint = stabMap(assay_list,
+#                     reference_list = c("IMC", "Xenium"),
+#                     ncomponentsReference = c("Xenium" = 50, "IMC" = 10),
+#                     projectAll = TRUE,
+#                     plot = FALSE,
+#                     restrictFeatures = TRUE)
+
+out_joint = cbind(out_IMC, out_Xenium[rownames(out_IMC),])
+out_joint = reWeightEmbedding(out_joint, weights = c("IMC_PC" = 1, "Xenium_PC" = 1))
+
+out_joint_corrected = reducedMNN_batchFactor(
+  as.matrix(out_joint), batchFactor = modality[rownames(out_joint)])
+
+out_joint_UMAP_corrected = calculateUMAP_rnames(out_joint_corrected)
+
+out_joint_df = data.frame(cell = names(modality),
+                          modality = modality,
+                          UMAP1_joint_corrected = out_joint_UMAP_corrected[names(modality),1],
+                          UMAP2_joint_corrected = out_joint_UMAP_corrected[names(modality),2]
+)
+ctype_joint = c(setNames(as.character(IMC$cellPhenotype), colnames(IMC)),
+                setNames(as.character(CITESeq$celltype_subset), colnames(CITESeq)),
+                setNames(rep("Unknown", ncol(Xenium)), colnames(Xenium)))
+out_joint_df$celltype <- ctype_joint[rownames(out_joint_df)]
+out_joint_df <- permuteRows(out_joint_df)
+
+unique(as.character(IMC$cellPhenotype))
+unique(as.character(CITESeq$celltype_subset))
+
+broad_celltypes = c("Macrophages & granulocytes" = "Myeloid",
+                    "Endothelial" = "Endothelial",
+                    "Macrophages" = "Myeloid",
+                    "Myofibroblasts" = "Fibroblasts",
+                    "Granulocytes" = "Myeloid",
+                    "Fibroblasts" = "Fibroblasts",
+                    "Myofibroblasts PDPN^{+}" = "Fibroblasts",
+                    "CD8^{+} T cells" = "T cells",
+                    "Fibroblasts FSP1^{+}" = "Fibroblasts",
+                    "CD57^{+}" = "Epithelial",
+                    "T_{Reg} & T_{Ex}" = "T cells",
+                    "CD4^{+} T cells" = "T cells",
+                    "B cells" = "B cells",
+                    "CD38^{+} lymphocytes" = "Plasmablasts",
+                    "CD4^{+} T cells & APCs" = "T cells",
+                    "Ki67^{+}" = "TME cycling",
+                    "CK^{med}ER^{lo}" = "Epithelial",
+                    "CK^{lo}ER^{med}" = "Epithelial",
+                    "CK8-18^{+} ER^{hi}" = "Epithelial",
+                    "ER^{hi}CXCL12^{+}" = "Epithelial",
+                    "CK^{+} CXCL12^{+}" = "Epithelial",
+                    "CK8-18^{hi}CXCL12^{hi}" = "Epithelial",
+                    "CK^{lo}ER^{lo}" = "Epithelial",
+                    "Ep Ki67^{+}" = "Epithelial",
+                    "CK8-18^{hi}ER^{lo}" = "Epithelial",
+                    "MHC I & II^{hi}" = "Epithelial",
+                    "Basal" = "Epithelial",
+                    "CD15^{+}" = "Epithelial",
+                    "MHC I^{hi}CD57^{+}" = "Epithelial",
+                    "Ep CD57^{+}" = "Epithelial",
+                    "HER2^{+}" = "Epithelial",
+                    "MHC^{hi}CD15^{+}" = "Epithelial",
+                    "Endothelial ACKR1" = "Endothelial",
+                    "Endothelial RGS5" = "Endothelial",
+                    "Endothelial CXCL12" = "Endothelial",
+                    "CAFs MSC iCAF-like s1" = "Fibroblasts",
+                    "CAFs MSC iCAF-like s2" = "Fibroblasts",
+                    "CAFs Transitioning s3" = "Fibroblasts",
+                    "CAFs myCAF like s4" = "Fibroblasts",
+                    "CAFs myCAF like s5" = "Fibroblasts",
+                    "PVL Differentiated s3" = "PVL",
+                    "PVL_Immature s2" = "PVL",
+                    "PVL Immature s1" = "PVL",
+                    "Endothelial Lymphatic LYVE1" = "Endothelial",
+                    "Cycling PVL" = "PVL",
+                    "B cells Memory" = "B cells",
+                    "B cells Naive" = "B cells",
+                    "Plasmablasts" = "Plasmablasts",
+                    "T_cells_c4_CD8+_ZFP36" = "T cells",
+                    "T_cells_c6_IFIT1" = "T cells",
+                    "T_cells_c7_CD8+_IFNG" = "T cells",
+                    "T_cells_c8_CD8+_LAG3" = "T cells",
+                    "T_cells_c0_CD4+_CCR7" = "T cells",
+                    "T_cells_c1_CD4+_IL7R" = "T cells",
+                    "T_cells_c2_CD4+_T-regs_FOXP3" = "T cells",
+                    "T_cells_c3_CD4+_Tfh_CXCL13" = "T cells",
+                    "T_cells_c9_NK_cells_AREG" = "NK cells",
+                    "T_cells_c11_MKI67" = "T cells",
+                    "T_cells_c10_NKT_cells_FCGR3A" = "NK cells",
+                    "Myeloid_c10_Macrophage_1_EGR1" = "Myeloid",
+                    "Myeloid_c12_Monocyte_1_IL1B" = "Myeloid",
+                    "Myeloid_c2_LAM2_APOE" = "Myeloid",
+                    "Myeloid_c1_LAM1_FABP5" = "Myeloid",
+                    "Myeloid_c8_Monocyte_2_S100A9" = "Myeloid",
+                    "Myeloid_c7_Monocyte_3_FCGR3A" = "Myeloid",
+                    "Myeloid_c9_Macrophage_2_CXCL10" = "Myeloid",
+                    "Cycling_Myeloid" = "Myeloid",
+                    "Myeloid_c11_cDC2_CD1C" = "Myeloid",
+                    "Myeloid_c4_DCs_pDC_IRF7" = "Myeloid",
+                    "Myeloid_c3_cDC1_CLEC9A" = "Myeloid",
+                    "Myeloid_c0_DC_LAMP3" = "Myeloid",
+                    "Unknown" = "Unknown")
+out_joint_df$broad_celltype = broad_celltypes[out_joint_df$celltype]
+table(out_joint_df$broad_celltype)
+table(out_joint_df$broad_celltype, out_joint_df$modality)
+
+names(table(out_joint_df$broad_celltype))
+
+hand_cols = c(
+  "#D88404",
+  "#3B523A",
+  "#D3C8BC",
+  "#BA1E05",
+  "#232731",
+  "#BA843B",
+  "#CCABC5",
+  "#93B27A",
+  "#683A26",
+  "#255176",
+  "#E8EBF0"
+)
+plot(1:11, col = hand_cols, pch = 16, cex = 5)
+
+broad_celltype_colours <- setNames(hand_cols,
+                                   names(table(out_joint_df$broad_celltype)))
+```
+
+
+```{r}
+# export some plots:
+g1 = ggplot(out_joint_df, aes(x = modality)) + 
+  # geom_bar(fill = "gray") +
+  geom_bar(aes(fill = modality)) + 
+  scale_fill_manual(values = modality_colours) +
+  ylab("Number of cells") +
+  theme_classic() +
+  xlab("Modality") +
+  theme(legend.position = "none") +
+  theme(axis.text = element_text(size = 15)) +
+  theme(axis.title = element_text(size = 20)) +
+  NULL
+g1
+ggsave(g1, file = paste0("../../Figures/raw/BreastCancer_multihop_numCells.pdf"),
+       width = 5, height = 4)
+
+g2 = mosaicDataUpSet(assay_list,
+                     text.scale = c(3,1,2,1,3,3), 
+                     point.size = 2.8, 
+                     line.size = 1,
+                     sets.x.label = "Cells",
+                     mainbar.y.label = "Features",
+                     main.bar.color = method_colours["StabMap"],
+                     set_size.numbers_size = TRUE,
+                     keep.order = TRUE,
+                     sets = names(assay_list))
+g2
+pdf(paste0("../../Figures/raw/BreastCancer_multihop_upset.pdf"), 
+    width = 5, height = 5)
+print(g2)
+dev.off()
+  
+graph = mosaicDataTopology(assay_list)
+V(graph)$size = 70
+V(graph)$color = modality_colours[V(graph)$name]
+V(graph)$label.color = c("white", "black", "black")
+plot(graph, layout = layout.drl)
+  
+pdf(paste0("../../Figures/raw/BreastCancer_multihop_network.pdf"), 
+    width = 6, height = 6)
+plot(graph, layout = layout.drl)
+dev.off()
+```
+
+
+```{r}
+modality_alpha = 1000/c(CITESeq = 2316,
+                   IMC = 32400,
+                   Xenium = 276064)
+
+g3List = sapply(c(
+  "joint"), function(nm){
+    g3_joint = ggplot(out_joint_df, aes(x = get(paste0("UMAP1_", nm, "_corrected")),
+                                        y = get(paste0("UMAP2_", nm, "_corrected")))) + 
+      geom_scattermore(aes(colour = modality, alpha = modality), pointsize = 1.3) +
+      scale_colour_manual(values = modality_colours) +
+      scale_alpha_manual(values = modality_alpha) +
+      theme_classic() + 
+      theme(legend.position = "none") +
+      theme(axis.ticks = element_blank()) +
+      theme(axis.text = element_blank()) +
+      guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) +
+      ggtitle("") +
+      coord_fixed() +
+      xlab("UMAP1") + 
+      ylab("UMAP2") +
+      labs(colour = "") + 
+      # facet_wrap(~modality) +
+      NULL
+  }, simplify = FALSE)
+g3List
+
+g4List = sapply(c(
+  "joint"
+  ), function(nm){
+    ggplot(subset(out_joint_df, broad_celltype != "Unknown"), 
+           aes(x = get(paste0("UMAP1_", nm, "_corrected")),
+               y = get(paste0("UMAP2_", nm, "_corrected")))) + 
+  geom_scattermore(aes(colour = broad_celltype), pointsize = 1.3, alpha = 0.5) +
+  # scale_colour_nord(palette = "lumina") +
+  scale_colour_manual(values = broad_celltype_colours) +
+  # scale_colour_brewer(palette = "Set1") +
+  theme_classic() + 
+  theme(legend.position = "right",) +
+  theme(axis.ticks = element_blank()) +
+  theme(axis.text = element_blank()) +
+  guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1),
+                               ncol = 1)) +
+      ggtitle("") +
+  coord_fixed() +
+  xlab("UMAP1") + 
+  ylab("UMAP2") +
+  labs(colour = "") +
+      # facet_wrap(~modality) +
+  NULL
+}, simplify = FALSE)
+g4List
+
+wrap_plots(c(g3List, g4List))  + plot_layout(nrow = 1, ncol = 2)
+```
+
+Export these plots
+
+```{r}
+g = g3List[["joint"]] + 
+  theme(legend.position = "none") +
+  ggtitle("")
+g
+ggsave(g, file = "../../Figures/raw/BreastCancer_multihop_both_modality.pdf",
+       height = 6, width = 6)
+g = g4List[["joint"]] + 
+  theme(legend.position = "none") +
+  ggtitle("")
+g
+ggsave(g, file = "../../Figures/raw/BreastCancer_multihop_both_celltype.pdf",
+       height = 6, width = 6)
+
+g_leg = as_ggplot(get_legend(g3List[["joint"]] + theme(legend.position = "right") + 
+                               guides(alpha = guide_none())))
+g_leg
+ggsave(g_leg, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_UMAP_modality_legend.pdf"),
+       height = 1, width = 3)
+
+g_leg = as_ggplot(get_legend(g4List[["joint"]]))
+g_leg
+ggsave(g_leg, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_UMAP_celltype_legend.pdf"),
+       height = 3, width = 3)
+```
+
+# Classify broad celltypes
+
+We will use the IMC defined cell types to classify the Xenium data.
+
+```{r}
+knn_out = embeddingKNN(out_joint_corrected,
+                       setNames(ifelse(IMC$is_epithelial == "1", "Epithelial", "Not epithelial"),colnames(IMC)),
+                       type = "uniform_fixed",
+                       k_values = 5)
+Xenium$epithelial_predicted = knn_out[colnames(Xenium), "predicted_labels"]
+
+plotReducedDim(Xenium, "coords", colour_by = "epithelial_predicted", by_exprs_values = "logcounts", size_by = "cell_area", point_alpha = 0.5) + 
+                 facet_wrap(~Xenium$Sample) + 
+                 coord_fixed() + 
+                 scale_colour_manual(values = c("Epithelial" = "black", "Not epithelial" = "grey")) +
+                 scale_size_continuous(range = c(0.01,0.1))
+
+g = plotReducedDim(Xenium[,Xenium$Sample == "Rep1"], 
+                   "coords", colour_by = "epithelial_predicted", 
+                   by_exprs_values = "logcounts", size_by = "cell_area", point_alpha = 0.5) + 
+  coord_fixed() + 
+  scale_colour_manual(values = c("Epithelial" = broad_celltype_colours["Epithelial"], "Not epithelial" = NA)) +
+  scale_size_continuous(range = c(0.01,0.1)) +
+  theme(axis.text = element_blank()) +
+  theme(axis.line = element_blank()) +
+  theme(axis.ticks = element_blank()) +  
+  xlab("") + ylab("") +
+  theme(legend.position = "none") +
+  theme(panel.background = element_rect(fill = "black")) +
+  # theme(plot.background = element_rect(fill = "black")) +
+  NULL
+g
+ggsave(g, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_epithelial_spatial.pdf"),
+       height = 6, width = 9)
+ggsave(g, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_epithelial_spatial.png"),
+       height = 6, width = 9)
+
+IMC$broad_celltype <- out_joint_df[colnames(IMC),]$broad_celltype
+
+knn_out = embeddingKNN(out_joint_corrected,
+                       setNames(IMC$broad_celltype,colnames(IMC)),
+                       type = "uniform_fixed",
+                       k_values = 5)
+Xenium$broad_celltype_predicted = knn_out[colnames(Xenium), "predicted_labels"]
+
+
+
+table(Xenium$broad_celltype_predicted, Xenium$epithelial_predicted)
+```
+
+# Imputed protein signals
+
+We can use the imputation over the stabmap embedding to plot a predicted 
+protein signal over the two Xenium-resolved breast cancer samples,
+
+```{r}
+imp_Xenium_IMC = imputeEmbedding(assay_list,
+                                 out_joint_corrected,
+                                 reference = colnames(assay_list[["IMC"]]),
+                                 query = colnames(assay_list[["Xenium"]]))[[1]]
+
+Xenium_IMC = SingleCellExperiment(assays = list(logcounts = imp_Xenium_IMC),
+                                  colData = colData(Xenium),
+                                  reducedDims = list("coords" = reducedDim(Xenium, "coords")))
+
+Xenium_IMC <- runPCA(Xenium_IMC, ncomponents = 10)
+Xenium_IMC <- runUMAP(Xenium_IMC, dimred = "PCA")
+
+cd = as.data.frame(cbind(colData(Xenium_IMC), t(logcounts(Xenium_IMC)), reducedDim(Xenium_IMC, "UMAP")))
+cd$PDGFRB = logcounts(Xenium)["PDGFRB",]
+cd <- subset(cd, Sample == "Rep1")
+cd$protein_PDGFRB_norm <- sort(cd$protein_FOXP3)[rank(cd$protein_PDGFRB)]
+
+g0 = ggplot(cd, aes(x = x_centroid, y = y_centroid, size = cell_area)) + 
+  theme_classic() +
+  theme(panel.background = element_rect(fill = "black")) +
+  theme(panel.background = element_rect(fill = "black")) +
+  theme(axis.text = element_blank()) + 
+  theme(axis.ticks = element_blank()) +
+  coord_fixed() + 
+  xlab("") +
+  ylab("") +
+  scale_alpha_continuous(range = c(0,1)) + 
+  scale_size_continuous(range = c(0.01,0.05)) + 
+  theme(legend.position = "none") +
+  NULL
+
+g = g0 + geom_point(aes(alpha = protein_FOXP3), colour = "#D500CB") + geom_point(aes(alpha = protein_PDGFRB_norm), colour = "#21E3DF")
+g
+ggsave(g, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_proteinImputed_spatial.pdf"),
+       height = 6, width = 9)
+ggsave(g, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_proteinImputed_spatial.png"),
+       height = 6, width = 9)
+```
+
+Plot cell-cell distribution for the predicted cell types from xenium data,
+using regional patches (within box for the local cell)
+
+```{r}
+xvals = c(4227.5, 5296.8)
+yvals = c(4891.8, 1267.8)
+rad = 375
+
+pList = list()
+
+for (i in 1:2) {
+
+# grab cells that are within 375 pixel units and the same rep
+Xenium_local = Xenium[,abs(Xenium$x_centroid - xvals[i]) <= rad & 
+                        abs(Xenium$y_centroid - yvals[i]) <= rad & 
+                        Xenium$Sample == "Rep1"]
+Xenium_local$uniqueID <- colnames(Xenium_local)
+
+# only keep cell types with at least 5 cells
+ct_keep = names(which(table(Xenium_local$broad_celltype_predicted) >= 5))
+Xenium_local <- Xenium_local[,Xenium_local$broad_celltype_predicted %in% ct_keep]
+
+# to circumvent bug from previous project (for some reason):
+Xenium_local$embryo = "one"
+Xenium_local$z = "two"
+
+graph_local = get_delaunay(reducedDim(Xenium_local, "coords"), plot = FALSE)[["graph"]]
+
+out = cellCellContact(sce = Xenium_local,
+                      group = "broad_celltype_predicted",
+                      graph = graph_local,
+                      nperm = 1000,
+                      plot = FALSE,
+                      cellID = "uniqueID",
+                      x_name = "x_centroid",
+                      y_name = "y_centroid",
+                      splitgroups = "Sample")
+
+p = cellCellContactHeatmapTriangle(out, col_ann = broad_celltype_colours)
+p
+pList[[i]] <- p
+}
+pList[[1]]
+pList[[2]]
+
+pdf(paste0("../../Figures/raw/BreastCancer_multihop_cellcellcontact_1.pdf"),
+    height = 6, width = 6)
+pList[[1]]
+dev.off()
+pdf(paste0("../../Figures/raw/BreastCancer_multihop_cellcellcontact_2.pdf"),
+    height = 6, width = 6)
+pList[[2]]
+dev.off()
+
+box_df = data.frame(
+  x = xvals[c(1,1,1,1,2,2,2,2)] + c(-rad,rad,rad,-rad,-rad,rad,rad,-rad),
+  y = yvals[c(1,1,1,1,2,2,2,2)] + c(-rad,-rad,rad,rad,-rad,-rad,rad,rad),
+  Sample = rep("Rep1", 8),
+  box = c(1,1,1,1,2,2,2,2),
+  colour = c("white","white","white","white","yellow","yellow","yellow","yellow")
+)
+
+ggplot(subset(as.data.frame(colData(Xenium)), Sample == "Rep1"), aes(x = x_centroid, y = y_centroid)) + 
+  geom_point(aes(colour = broad_celltype_predicted,
+                 size = cell_area), alpha = 0.5) +
+  facet_wrap(~Sample) + 
+  theme_classic() +
+  coord_fixed() + 
+  scale_colour_manual(values = broad_celltype_colours) +
+  scale_size_continuous(range = c(0.01,0.05)) + 
+  geom_polygon(aes(x = x, y = y, group = box), fill = NA, data = box_df, colour = "black") + 
+  NULL
+
+g = plotReducedDim(Xenium[,Xenium$Sample == "Rep1"], "coords", colour_by = "broad_celltype_predicted",
+                   by_exprs_values = "logcounts", size_by = "cell_area",
+                   point_alpha = 0.5) + 
+  coord_fixed() + 
+  scale_colour_manual(values = broad_celltype_colours) +
+  scale_size_continuous(range = c(0.01,0.05)) + 
+  geom_polygon(aes(x = x, y = y, group = box), fill = NA, data = subset(box_df, box == 1), colour = "red") + 
+  geom_polygon(aes(x = x, y = y, group = box), fill = NA, data = subset(box_df, box == 2), colour = "yellow") + 
+  theme(axis.text = element_blank()) +
+  theme(axis.line = element_blank()) +
+  theme(axis.ticks = element_blank()) +  
+  xlab("") + ylab("") +
+  theme(legend.position = "none") +
+  theme(panel.background = element_rect(fill = "black")) +
+  # scale_alpha_continuous(range = c(0.1,0.1)) + 
+  NULL
+g
+ggsave(g, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_broadCelltype_spatial.pdf"),
+       height = 6, width = 9)
+ggsave(g, 
+       file = paste0("../../Figures/raw/BreastCancer_multihop_broadCelltype_spatial.png"),
+       height = 6, width = 9)
+
+```
+
+Finish
+
+```{r}
+sessionInfo()
+```

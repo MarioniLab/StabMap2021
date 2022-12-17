@@ -1,0 +1,77 @@
+---
+title: "StabMap: Generate Breast Cancer Xenium dataset object"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+source("../scripts/initialise.R")
+library(igraph)
+library(gtools)
+library(DropletUtils)
+```
+
+Data is from 10X Genomics development team, described in preprint 
+https://www.biorxiv.org/content/10.1101/2022.10.06.510405v1.full. 
+Data was downloaded from website https://www.10xgenomics.com/products/xenium-in-situ/preview-dataset-human-breast
+of a single FFPE breast cancer tissue block.
+
+# Load cell expression data
+
+```{r}
+sce = read10xCounts(samples = c("../../BreastCancerXenium/Rep1",
+                                 "../../BreastCancerXenium/Rep2"))
+colnames(sce) <- paste0(gsub(".+/", "", sce$Sample), "_", sce$Barcode)
+
+# note that rowData contains feature information
+rowData(sce)
+
+rep1_meta = read.csv("../../BreastCancerXenium/Rep1/Xenium_FFPE_Human_Breast_Cancer_Rep1_cells.csv",
+                     header = TRUE, row.names = 1)
+rep1_meta$Sample = "Rep1"
+rownames(rep1_meta) <- paste0("Rep1_", rownames(rep1_meta))
+rep2_meta = read.csv("../../BreastCancerXenium/Rep2/Xenium_FFPE_Human_Breast_Cancer_Rep2_cells.csv",
+                     header = TRUE, row.names = 1)
+rep2_meta$Sample = "Rep2"
+rownames(rep2_meta) <- paste0("Rep2_", rownames(rep2_meta))
+
+meta = rbind(rep1_meta, rep2_meta)
+
+table(rownames(meta) %in% colnames(sce))
+identical(rownames(meta), colnames(sce))
+
+colData(sce) <- DataFrame(meta)
+reducedDim(sce, "coords") <- meta[,c("x_centroid", "y_centroid")]
+
+sce
+```
+
+```{r}
+saveRDS(sce, file = "../../BreastCancerXenium/xenium_sce.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```

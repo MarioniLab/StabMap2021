@@ -1,0 +1,119 @@
+---
+title: "StabMap: Generate Breast Cancer CITE-seq dataset object"
+author: "Shila Ghazanfar"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+       html_document:
+                     toc: true
+                     toc_float:
+                           collapsed: false
+                           smooth_scroll: false
+                     code_folding: hide
+                     fig_width: 10 
+                     fig_height: 8
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = FALSE, cache.lazy = FALSE)
+```
+
+```{r}
+set.seed(2021)
+```
+
+Load scripts and packages.
+
+```{r}
+source("../scripts/initialise.R")
+library(igraph)
+library(gtools)
+library(DropletUtils)
+library(CiteFuse)
+```
+
+Data is from Wu et al (https://www.nature.com/articles/s41588-021-00911-1),
+where CITE-seq data from one patient is extracted, CID3838, corresponding
+to HER2 case.
+
+RNA modality was downloaded from GEO via supplementary file https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM5354514
+and saved locally into BreastCancerCITE/RNA folder. File name was renamed from
+count_matrix_barcodes.tsv to barcodes.tsv; from count_matrix_genes.tsv to genes.tsv;
+and from count_matrix_sparse.mtx to matrix.mtx.
+
+ADT modality was downloaded from Broad Institute portal
+https://singlecell.broadinstitute.org/single_cell/study/SCP1039
+and save locally into BreastCancerCITE/ADT folder.
+
+# Load RNA data
+
+```{r}
+rna = read10xCounts(samples = "../../BreastCancerCITE/RNA/CID3838")
+
+rna_meta = read.csv("../../BreastCancerCITE/RNA/CID3838/metadata.csv", header = TRUE,
+                    row.names = 1)[rna$Barcode,]
+
+colData(rna) <- DataFrame(rna_meta)
+
+rna
+```
+
+# Load ADT data
+
+Note that there are different numbers of cells identified, so we collect the 
+cells detected in both modalities.
+
+```{r}
+adt = read10xCounts(samples = "../../BreastCancerCITE/ADT/CID3838/umi_count/")
+adt$Barcode <- paste0("CID3838_", adt$Barcode)
+colnames(adt) <- adt$Barcode
+
+cite_prots = toupper(gsub("-...............$", "", rownames(adt)))
+cite_prots <- setNames(cite_prots, cite_prots)
+
+mapping = rbind(
+  c("CD31.VWF", "CD31"),
+  c("CD8", "CD8A"),
+  c("HER2..3B5.", "HER2"),
+  c("PD.1", "PD-1")
+)
+colnames(mapping) = c("IMC", "CITE")
+
+cite_prots_new = cite_prots
+cite_prots_new[mapping[,"CITE"]] <- mapping[,"IMC"]
+cite_prots_new <- as.character(cite_prots_new)
+
+rownames(adt) <- cite_prots_new
+
+table(colnames(adt) %in% colnames(rna))
+table(colnames(rna) %in% colnames(adt))
+
+adt
+```
+
+# Generate a joint object using CiteFuse
+
+```{r}
+cells = intersect(colnames(rna), colnames(adt))
+length(cells)
+
+cite_list = list(
+  "RNA" = counts(rna[,cells]),
+  "ADT" = counts(adt[,cells])
+)
+
+sce = preprocessing(cite_list)
+colData(sce) <- colData(rna)[cells,]
+
+sce
+```
+
+```{r}
+saveRDS(sce, file = "../../BreastCancerCITE/cite_sce.Rds")
+```
+
+# Finish
+
+```{r}
+sessionInfo()
+```
