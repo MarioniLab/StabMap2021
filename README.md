@@ -46,5 +46,5 @@ for analysis output files.
 
 ## Contact
 
-shila.ghazanfar \<at\> cruk.cam.ac.uk, shila.ghazanfar  \<at\> sydney.edu.au, or marioni \<at\> ebi.ac.uk
+shila.ghazanfar \<at\> cruk.cam.ac.uk, shila.ghazanfar \<at\> sydney.edu.au, or marioni \<at\> ebi.ac.uk
 
