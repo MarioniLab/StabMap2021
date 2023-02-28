@@ -405,7 +405,8 @@ g = ggplot(res3, aes(x = factor(genes), y = Accuracy)) +
   labs(fill = "") +
   labs(colour = "") +
   theme_classic() +
-  geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess") + 
+  geom_smooth(aes(group = type, colour = type), fill = NA, method = "loess", position = position_dodge(width = 0.8)) + 
+  geom_point(aes(group = type, colour = type), size = 0.5, position = position_dodge(width = 0.8)) +
   theme(axis.title = element_text(size = 30)) +
   theme(axis.text = element_text(size = 15)) +
   scale_colour_manual(values = method_colours, aesthetics = c("colour", "fill")) +
@@ -458,6 +459,7 @@ g = ggplot(tab_diff, aes(x = factor(genes), y = diff)) +
   labs(colour = "") +
   theme_classic() +
   geom_smooth(aes(group = integration, colour = integration), fill = NA, method = "loess") + 
+  geom_point(aes(group = integration, colour = integration), position = position_dodge(width = 0.8)) + 
   theme(axis.title = element_text(size = 20)) +
   theme(axis.text = element_text(size = 15)) +
   scale_colour_brewer(palette = "Set2", aesthetics = c("colour", "fill")) +
